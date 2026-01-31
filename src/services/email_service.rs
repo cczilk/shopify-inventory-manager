@@ -1,0 +1,78 @@
+use lettre::transport::smtp::authentication::Credentials;
+use lettre::{Message, SmtpTransport, Transport};
+use std::env;
+use tracing::{info, error};
+
+#[derive(Clone)]
+pub struct EmailService {
+    sender_email: String,
+    admin_email: String,
+    mailer_config: (String, String, String, u16),
+}
+
+impl EmailService {
+    pub fn new() -> Self {
+        let smtp_server = env::var("SMTP_SERVER").unwrap_or_default().trim().to_string();
+        let smtp_user = env::var("SMTP_USER").unwrap_or_default().trim().to_string();
+        let smtp_pass = env::var("SMTP_PASS").unwrap_or_default().trim().to_string();
+        let smtp_port = env::var("SMTP_PORT")
+            .unwrap_or_else(|_| "587".to_string())
+            .trim()
+            .parse()
+            .unwrap_or(587);
+        let admin_email = env::var("NOTIFICATION_EMAIL").unwrap_or_default().trim().to_string();
+
+        Self {
+            sender_email: smtp_user.clone(),
+            admin_email,
+            mailer_config: (smtp_server, smtp_user, smtp_pass, smtp_port),
+        }
+    }
+
+    fn get_transport(&self) -> SmtpTransport {
+        let (server, user, pass, port) = &self.mailer_config;
+        let creds = Credentials::new(user.clone(), pass.clone());
+        SmtpTransport::relay(server)
+            .unwrap()
+            .port(*port)
+            .credentials(creds)
+            .build()
+    }
+
+    pub fn send_error_alert(&self, error_message: &str) {
+        self.execute_send("Shopify Sync ERROR Alert", error_message);
+    }
+
+    pub fn send_report(&self, subject: &str, body: &str) {
+        self.execute_send(subject, body);
+    }
+
+    fn execute_send(&self, subject: &str, body: &str) {
+        
+        let from_addr = match self.sender_email.parse() {
+            Ok(a) => a,
+            Err(e) => { error!("Invalid SMTP_USER email format: '{}' - Error: {}", self.sender_email, e); return; }
+        };
+        let to_addr = match self.admin_email.parse() {
+            Ok(a) => a,
+            Err(e) => { error!("Invalid NOTIFICATION_EMAIL format: '{}' - Error: {}", self.admin_email, e); return; }
+        };
+
+        
+        let email_res = Message::builder()
+            .from(from_addr)
+            .to(to_addr)
+            .subject(subject)
+            .body(body.to_string());
+
+        match email_res {
+            Ok(email) => {
+                match self.get_transport().send(&email) {
+                    Ok(_) => info!("Email notification sent successfully to {}", self.admin_email),
+                    Err(e) => error!("SMTP Relay failed: {:?}", e),
+                }
+            },
+            Err(e) => error!("Failed to build email message: {}", e),
+        }
+    }
+}

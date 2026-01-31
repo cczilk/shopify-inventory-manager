@@ -2,6 +2,7 @@ use crate::models::Product;
 use anyhow::{Context, Result};
 use csv::ReaderBuilder;
 use std::path::Path;
+use tracing::error;
 
 #[derive(Clone)]
 pub struct CsvService;
@@ -11,27 +12,29 @@ impl CsvService {
         Self
     }
 
-    pub async fn read_csv<P: AsRef<Path>>(&self, path: P) -> Result<Vec<Product>> {
-        let path = path.as_ref();
-        
-        let content = tokio::fs::read_to_string(path)
-            .await
-            .context(format!("Failed to read CSV file: {:?}", path))?;
+pub async fn read_csv(&self, file_path: &str) -> Result<Vec<Product>> {
+    let content = std::fs::read_to_string(file_path)?;
+    
+    
+    let clean_content = content.trim_start_matches('\u{feff}');
 
-        let mut reader = ReaderBuilder::new()
-            .has_headers(true)
-            .flexible(true)
-            .from_reader(content.as_bytes());
+    let mut rdr = csv::ReaderBuilder::new()
+        .has_headers(true)
+        .trim(csv::Trim::All) 
+        .from_reader(clean_content.as_bytes());
 
-        let mut products = Vec::new();
-
-        for result in reader.deserialize() {
-            let product: Product = result.context("Failed to parse CSV row")?;
-            products.push(product);
+    let mut products = Vec::new();
+    for result in rdr.deserialize() {
+        match result {
+            Ok(product) => products.push(product),
+            Err(e) => {
+                error!("CSV Parse Error on row: {}", e);
+                return Err(anyhow::anyhow!("Failed to parse CSV row: {}", e));
+            }
         }
-
-        Ok(products)
     }
+    Ok(products)
+}
 
     pub async fn create_template<P: AsRef<Path>>(&self, path: P) -> Result<()> {
         let template = r#"sku,title,price,inventory_quantity,barcode,weight,description

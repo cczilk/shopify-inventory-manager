@@ -4,9 +4,8 @@ use reqwest::{header, Client};
 use serde_json::json;
 use std::env;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
-use std::time::Duration;
-use tracing::{info, warn};
+use std::io::Write;
+use tracing::info;
 
 #[derive(Clone)]
 pub struct ShopifyService {
@@ -117,11 +116,18 @@ impl ShopifyService {
             return Ok(id);
         }
 
+        if let Ok(id_str) = env::var("SHOPIFY_LOCATION_ID") {
+            if let Ok(id) = id_str.parse::<i64>() {
+                self.location_id = Some(id);
+                return Ok(id);
+            }
+        }
+
         let url = format!("{}/locations.json", self.base_url);
         let response = self.client.get(&url).send().await?;
 
         if !response.status().is_success() {
-            return Err(anyhow!("Failed to fetch locations: {}", response.status()));
+            return Err(anyhow!("Failed to fetch locations: {}. Please set SHOPIFY_LOCATION_ID in your .env", response.status()));
         }
 
         let locations: ShopifyLocationsResponse = response.json().await?;
@@ -137,15 +143,47 @@ impl ShopifyService {
 
     pub async fn update_inventory(&mut self, product: &Product) -> Result<()> {
         let loc_id = self.get_location_id().await?;
-        let search_url = format!("{}/products.json?sku={}", self.base_url, product.sku);
         
-        let response = self.client.get(&search_url).send().await?;
-        if response.status() == 401 {
-            self.refresh_daily_token().await?;
-        }
+        // Use a loop to handle a single retry if the token is expired
+        let mut retry_count = 0;
+        while retry_count < 2 {
+            let search_url = format!("{}/variants.json?sku={}", self.base_url, product.sku);
+            let response = self.client.get(&search_url).send().await?;
+            
+            if response.status() == 401 {
+                self.refresh_daily_token().await?;
+                retry_count += 1;
+                continue;
+            }
 
-        info!("Synced SKU: {}", product.sku);
-        Ok(())
+            let data: serde_json::Value = response.json().await?;
+            let variants = data["variants"].as_array().ok_or_else(|| anyhow!("Invalid response for SKU {}", product.sku))?;
+            
+            let variant = variants.iter().find(|v| v["sku"] == product.sku)
+                .ok_or_else(|| anyhow!("SKU {} not found on Shopify", product.sku))?;
+
+            let inventory_item_id = variant["inventory_item_id"].as_i64()
+                .ok_or_else(|| anyhow!("No inventory_item_id for SKU {}", product.sku))?;
+
+            let update_url = format!("{}/inventory_levels/set.json", self.base_url);
+            let body = json!({
+                "location_id": loc_id,
+                "inventory_item_id": inventory_item_id,
+                "available": product.inventory_quantity
+            });
+
+            let update_response = self.client.post(&update_url).json(&body).send().await?;
+
+            if update_response.status().is_success() {
+                info!("Successfully updated SKU: {} to qty: {}", product.sku, product.inventory_quantity);
+                return Ok(());
+            } else {
+                let err_msg = update_response.text().await?;
+                return Err(anyhow!("Inventory update failed for {}: {}", product.sku, err_msg));
+            }
+        }
+        
+        Err(anyhow!("Failed to update inventory for {} after token refresh", product.sku))
     }
 
     pub async fn create_product(&self, product: &Product) -> Result<()> {
@@ -163,7 +201,8 @@ impl ShopifyService {
 
         let response = self.client.post(&url).json(&body).send().await?;
         if !response.status().is_success() {
-            return Err(anyhow!("Failed to create product"));
+            let err = response.text().await?;
+            return Err(anyhow!("Failed to create product: {}", err));
         }
         Ok(())
     }
