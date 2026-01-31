@@ -1,0 +1,10 @@
+/target
+.env
+.env.backup
+.credentials
+logs/
+data/incoming/*.csv
+data/incoming/*.xls
+data/incoming/*.xlsx
+data/processed/*
+target/
