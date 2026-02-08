@@ -29,13 +29,12 @@ impl ExcelConverter {
         }
         
         let sheet_name = sheet_names[0].clone();
-        info!("Reading worksheet: {}", sheet_name);
-        
         let range: Range<Data> = workbook.worksheet_range(&sheet_name)
             .context(format!("Worksheet '{}' not found", sheet_name))?;
 
         let mut header_row_idx = 0;
         let mut headers: Vec<Data> = Vec::new();
+        
         
         for (idx, row) in range.rows().enumerate() {
             if row.is_empty() { continue; }
@@ -43,7 +42,6 @@ impl ExcelConverter {
             if first_cell.contains("oem") || first_cell.contains("category") || first_cell.contains("item no") {
                 headers = row.to_vec();
                 header_row_idx = idx;
-                info!("Found header row at index {}", idx);
                 break;
             }
         }
@@ -52,29 +50,37 @@ impl ExcelConverter {
             return Err(anyhow!("Could not find header row in Excel file"));
         }
         
+        
         let item_no_idx = self.find_column_index(&headers, &["Item No.", "SKU", "Item No", "Item#"])?;
         let description_idx = self.find_column_index(&headers, &["Description", "Product Name", "Title"])?;
         let on_hand_idx = self.find_column_index(&headers, &["On Hand", "Quantity", "Qty"])?;
         let sell_idx = self.find_column_index(&headers, &["Sell", "Price", "Sell Price"])?;
+        
+        
         let list_idx = self.find_column_index(&headers, &["List", "List Price", "MSRP"]).ok();
         let cost_idx = self.find_column_index(&headers, &["Cost", "Unit Cost", "Wholesale"]).ok();
+        let oem_idx = self.find_column_index(&headers, &["OEM", "Brand", "Manufacturer"]).ok();
+        let cat_idx = self.find_column_index(&headers, &["Category", "Type", "Dept"]).ok();
 
         let mut csv_records = Vec::new();
+        
+        
         csv_records.push(vec![
-            "sku".to_string(), "title".to_string(), "price".to_string(),
-            "inventory_quantity".to_string(), "barcode".to_string(),
-            "weight".to_string(), "description".to_string(),
-            "cost".to_string(), "compare_at_price".to_string(),
+            "Item No.".to_string(),
+            "Description".to_string(),
+            "Sell".to_string(),
+            "On Hand".to_string(),
+            "Cost".to_string(),
+            "List".to_string(),
+            "OEM".to_string(),
+            "Category".to_string(),
+            "Extended Sell".to_string(), 
         ]);
 
         let mut product_count = 0;
 
         for (_row_num, row) in range.rows().enumerate().skip(header_row_idx + 1) {
-            if row.is_empty() { continue; }
-            
-            if self.is_header_or_total_row(row, item_no_idx) {
-                continue;
-            }
+            if row.is_empty() || self.is_header_or_total_row(row, item_no_idx) { continue; }
 
             let sku = self.get_cell_value(row, item_no_idx).trim().to_string();
             if sku.is_empty() { continue; }
@@ -85,22 +91,25 @@ impl ExcelConverter {
             
             let list_str = list_idx.map(|idx| self.get_cell_value(row, idx)).unwrap_or_default();
             let cost_str = cost_idx.map(|idx| self.get_cell_value(row, idx)).unwrap_or_default();
+            let oem_str = oem_idx.map(|idx| self.get_cell_value(row, idx)).unwrap_or_else(|| "AMS".to_string());
+            let cat_str = cat_idx.map(|idx| self.get_cell_value(row, idx)).unwrap_or_else(|| "Parts".to_string());
 
             let price = self.parse_price(&price_str).unwrap_or(0.0);
             let list_price = self.parse_price(&list_str).unwrap_or(0.0);
             let cost = self.parse_price(&cost_str).unwrap_or(0.0);
             let quantity = self.parse_quantity(&quantity_str).unwrap_or(0);
 
+            
             csv_records.push(vec![
-                sku.clone(),
+                sku,
                 title.clone(),
                 format!("{:.2}", price),
                 quantity.to_string(),
-                sku.clone(),
-                "0".to_string(),
-                title,
                 format!("{:.2}", cost),
                 format!("{:.2}", list_price),
+                oem_str,
+                cat_str,
+                title, 
             ]);
 
             product_count += 1;
@@ -110,21 +119,20 @@ impl ExcelConverter {
         for record in csv_records { wtr.write_record(&record)?; }
         wtr.flush()?;
 
-        info!("Done: {} products converted.", product_count);
+        info!("Successfully converted {} products.", product_count);
         Ok(product_count)
     }
 
     fn find_column_index(&self, headers: &[Data], possible_names: &[&str]) -> Result<usize> {
         for (idx, cell) in headers.iter().enumerate() {
-            let cell_string = cell.to_string();
-            let cell_str = cell_string.trim();
+            let cell_str = cell.to_string().trim().to_lowercase();
             for &name in possible_names {
-                if cell_str.eq_ignore_ascii_case(name) {
+                if cell_str == name.to_lowercase() {
                     return Ok(idx);
                 }
             }
         }
-        Err(anyhow!("Required column not found. Checked: {:?}", possible_names))
+        Err(anyhow!("Required column not found among: {:?}", possible_names))
     }
 
     fn get_cell_value(&self, row: &[Data], idx: usize) -> String {
@@ -142,20 +150,11 @@ impl ExcelConverter {
     }
 
     fn is_header_or_total_row(&self, row: &[Data], item_no_idx: usize) -> bool {
-        if row.is_empty() { return true; }
-        
         let first_cell = row[0].to_string().trim().to_lowercase();
-        
-        if first_cell.is_empty() || first_cell.starts_with("total") {
+        if first_cell.is_empty() || first_cell.contains("total") || first_cell.contains("inventory") {
             return true;
         }
-
-        let sku_string = self.get_cell_value(row, item_no_idx);
-        let sku_cell = sku_string.trim();
-        if sku_cell.is_empty() {
-            return true;
-        }
-        
-        false
+        let sku = self.get_cell_value(row, item_no_idx);
+        sku.trim().is_empty()
     }
 }

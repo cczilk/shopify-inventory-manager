@@ -2,19 +2,19 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Product {
-    #[serde(rename = "Variant SKU")]
+    #[serde(rename = "Item No.")] 
     pub sku: String,
 
-    #[serde(rename = "Title")]
+    #[serde(rename = "Description")] 
     pub title: String,
 
-    #[serde(rename = "Handle")]
+    #[serde(default, rename = "Category")] 
     pub handle: String,
 
-    #[serde(rename = "Variant Price")]
+    #[serde(rename = "Sell")] 
     pub price: f64,
 
-    #[serde(rename = "Variant Inventory Qty")]
+    #[serde(rename = "On Hand")] 
     pub inventory_quantity: i32,
 
     #[serde(default)]
@@ -23,14 +23,17 @@ pub struct Product {
     #[serde(default)]
     pub weight: f64,
 
-    #[serde(default)]
+    #[serde(default, rename = "Extended Sell")] 
     pub description: String,
 
-    #[serde(default)]
+    #[serde(rename = "Cost")] 
     pub cost: f64,
 
-    #[serde(default, rename = "Variant Compare At Price")]
+    #[serde(default, rename = "List")] 
     pub compare_at_price: f64, 
+    
+    #[serde(default, rename = "OEM")] 
+    pub oem: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

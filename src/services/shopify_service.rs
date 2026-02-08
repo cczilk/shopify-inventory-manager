@@ -144,7 +144,7 @@ impl ShopifyService {
     pub async fn update_inventory(&mut self, product: &Product) -> Result<()> {
         let loc_id = self.get_location_id().await?;
         
-        // Use a loop to handle a single retry if the token is expired
+        
         let mut retry_count = 0;
         while retry_count < 2 {
             let search_url = format!("{}/variants.json?sku={}", self.base_url, product.sku);
@@ -188,22 +188,54 @@ impl ShopifyService {
 
     pub async fn create_product(&self, product: &Product) -> Result<()> {
         let url = format!("{}/products.json", self.base_url);
+        
+       
         let body = json!({
             "product": {
                 "title": product.title,
+                "vendor": product.oem,
+                "body_html": product.description,
+                "handle": product.handle,
                 "variants": [{
                     "sku": product.sku,
                     "price": product.price.to_string(),
-                    "inventory_quantity": product.inventory_quantity
+                    "compare_at_price": product.compare_at_price.to_string(),
+                    "inventory_quantity": product.inventory_quantity,
+                    "inventory_management": "shopify", 
+                    "barcode": product.barcode,
+                    "weight": product.weight
                 }]
             }
         });
 
         let response = self.client.post(&url).json(&body).send().await?;
-        if !response.status().is_success() {
+        
+        if response.status().is_success() {
+            let res_json: serde_json::Value = response.json().await?;
+            
+            
+            if let Some(variant) = res_json["product"]["variants"].as_array().and_then(|v| v.first()) {
+                if let Some(inv_id) = variant["inventory_item_id"].as_i64() {
+                    let cost_url = format!("{}/inventory_items/{}.json", self.base_url, inv_id);
+                    let cost_body = json!({
+                        "inventory_item": {
+                            "id": inv_id,
+                            "cost": product.cost.to_string(),
+                            "tracked": true 
+                        }
+                    });
+                    
+                    
+                    let cost_res = self.client.put(&cost_url).json(&cost_body).send().await?;
+                    if cost_res.status().is_success() {
+                        println!("Created {} with Cost: {}", product.sku, product.cost);
+                    }
+                }
+            }
+            Ok(())
+        } else {
             let err = response.text().await?;
-            return Err(anyhow!("Failed to create product: {}", err));
+            Err(anyhow!("Failed to create product: {}", err))
         }
-        Ok(())
     }
 }

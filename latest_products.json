@@ -1,0 +1,325 @@
+{
+    "products": [
+        {
+            "id": 8122405191716,
+            "title": "Synthetic Gear Oil 75W90",
+            "body_html": "High performance synthetic oil for heavy duty use.",
+            "vendor": "AMS-Racing",
+            "product_type": "",
+            "created_at": "2026-02-07T22:24:06-08:00",
+            "handle": "lubricants",
+            "updated_at": "2026-02-07T22:24:10-08:00",
+            "published_at": "2026-02-07T22:24:06-08:00",
+            "template_suffix": null,
+            "published_scope": "global",
+            "tags": "",
+            "status": "active",
+            "admin_graphql_api_id": "gid://shopify/Product/8122405191716",
+            "variants": [
+                {
+                    "id": 43392936804388,
+                    "product_id": 8122405191716,
+                    "title": "Default Title",
+                    "price": "24.92",
+                    "position": 1,
+                    "inventory_policy": "deny",
+                    "compare_at_price": "29.99",
+                    "option1": "Default Title",
+                    "option2": null,
+                    "option3": null,
+                    "created_at": "2026-02-07T22:24:06-08:00",
+                    "updated_at": "2026-02-07T22:24:07-08:00",
+                    "taxable": true,
+                    "barcode": "",
+                    "fulfillment_service": "manual",
+                    "grams": 0,
+                    "inventory_management": null,
+                    "requires_shipping": true,
+                    "sku": "AMSMISC-001",
+                    "weight": 0.0,
+                    "weight_unit": "kg",
+                    "inventory_item_id": 45460789592100,
+                    "inventory_quantity": 12,
+                    "old_inventory_quantity": 12,
+                    "admin_graphql_api_id": "gid://shopify/ProductVariant/43392936804388",
+                    "image_id": null
+                }
+            ],
+            "options": [
+                {
+                    "id": 10596136878116,
+                    "product_id": 8122405191716,
+                    "name": "Title",
+                    "position": 1,
+                    "values": [
+                        "Default Title"
+                    ]
+                }
+            ],
+            "images": [],
+            "image": null
+        },
+        {
+            "id": 8114647105572,
+            "title": "Epsilon Item",
+            "body_html": null,
+            "vendor": "Marisol Marine Company",
+            "product_type": "",
+            "created_at": "2026-01-31T13:03:45-08:00",
+            "handle": "epsilon-item",
+            "updated_at": "2026-01-31T13:03:48-08:00",
+            "published_at": "2026-01-31T13:03:45-08:00",
+            "template_suffix": null,
+            "published_scope": "global",
+            "tags": "",
+            "status": "active",
+            "admin_graphql_api_id": "gid://shopify/Product/8114647105572",
+            "variants": [
+                {
+                    "id": 43221757100068,
+                    "product_id": 8114647105572,
+                    "title": "Default Title",
+                    "price": "150.00",
+                    "position": 1,
+                    "inventory_policy": "deny",
+                    "compare_at_price": null,
+                    "option1": "Default Title",
+                    "option2": null,
+                    "option3": null,
+                    "created_at": "2026-01-31T13:03:45-08:00",
+                    "updated_at": "2026-01-31T13:03:45-08:00",
+                    "taxable": true,
+                    "barcode": null,
+                    "fulfillment_service": "manual",
+                    "grams": 0,
+                    "inventory_management": null,
+                    "requires_shipping": true,
+                    "sku": "Epsilon-03",
+                    "weight": 0.0,
+                    "weight_unit": "kg",
+                    "inventory_item_id": 45289298984996,
+                    "inventory_quantity": 500,
+                    "old_inventory_quantity": 500,
+                    "admin_graphql_api_id": "gid://shopify/ProductVariant/43221757100068",
+                    "image_id": null
+                }
+            ],
+            "options": [
+                {
+                    "id": 10585912442916,
+                    "product_id": 8114647105572,
+                    "name": "Title",
+                    "position": 1,
+                    "values": [
+                        "Default Title"
+                    ]
+                }
+            ],
+            "images": [],
+            "image": null
+        },
+        {
+            "id": 8114647072804,
+            "title": "Zeta Item",
+            "body_html": null,
+            "vendor": "Marisol Marine Company",
+            "product_type": "",
+            "created_at": "2026-01-31T13:03:44-08:00",
+            "handle": "zeta-item",
+            "updated_at": "2026-01-31T13:03:51-08:00",
+            "published_at": "2026-01-31T13:03:44-08:00",
+            "template_suffix": null,
+            "published_scope": "global",
+            "tags": "",
+            "status": "active",
+            "admin_graphql_api_id": "gid://shopify/Product/8114647072804",
+            "variants": [
+                {
+                    "id": 43221757067300,
+                    "product_id": 8114647072804,
+                    "title": "Default Title",
+                    "price": "25.50",
+                    "position": 1,
+                    "inventory_policy": "deny",
+                    "compare_at_price": null,
+                    "option1": "Default Title",
+                    "option2": null,
+                    "option3": null,
+                    "created_at": "2026-01-31T13:03:44-08:00",
+                    "updated_at": "2026-01-31T13:03:45-08:00",
+                    "taxable": true,
+                    "barcode": null,
+                    "fulfillment_service": "manual",
+                    "grams": 0,
+                    "inventory_management": null,
+                    "requires_shipping": true,
+                    "sku": "Zeta-02",
+                    "weight": 0.0,
+                    "weight_unit": "kg",
+                    "inventory_item_id": 45289298952228,
+                    "inventory_quantity": 50,
+                    "old_inventory_quantity": 50,
+                    "admin_graphql_api_id": "gid://shopify/ProductVariant/43221757067300",
+                    "image_id": null
+                }
+            ],
+            "options": [
+                {
+                    "id": 10585912410148,
+                    "product_id": 8114647072804,
+                    "name": "Title",
+                    "position": 1,
+                    "values": [
+                        "Default Title"
+                    ]
+                }
+            ],
+            "images": [],
+            "image": null
+        },
+        {
+            "id": 8114647007268,
+            "title": "Theta Item",
+            "body_html": null,
+            "vendor": "Marisol Marine Company",
+            "product_type": "",
+            "created_at": "2026-01-31T13:03:43-08:00",
+            "handle": "theta-item",
+            "updated_at": "2026-01-31T13:34:34-08:00",
+            "published_at": "2026-01-31T13:03:43-08:00",
+            "template_suffix": null,
+            "published_scope": "global",
+            "tags": "",
+            "status": "active",
+            "admin_graphql_api_id": "gid://shopify/Product/8114647007268",
+            "variants": [
+                {
+                    "id": 43221757001764,
+                    "product_id": 8114647007268,
+                    "title": "Default Title",
+                    "price": "19.99",
+                    "position": 1,
+                    "inventory_policy": "deny",
+                    "compare_at_price": null,
+                    "option1": "Default Title",
+                    "option2": null,
+                    "option3": null,
+                    "created_at": "2026-01-31T13:03:43-08:00",
+                    "updated_at": "2026-01-31T13:03:44-08:00",
+                    "taxable": true,
+                    "barcode": null,
+                    "fulfillment_service": "manual",
+                    "grams": 0,
+                    "inventory_management": null,
+                    "requires_shipping": true,
+                    "sku": "Theta-01",
+                    "weight": 0.0,
+                    "weight_unit": "kg",
+                    "inventory_item_id": 45289298886692,
+                    "inventory_quantity": 100,
+                    "old_inventory_quantity": 100,
+                    "admin_graphql_api_id": "gid://shopify/ProductVariant/43221757001764",
+                    "image_id": null
+                }
+            ],
+            "options": [
+                {
+                    "id": 10585912344612,
+                    "product_id": 8114647007268,
+                    "name": "Title",
+                    "position": 1,
+                    "values": [
+                        "Default Title"
+                    ]
+                }
+            ],
+            "images": [],
+            "image": null
+        },
+        {
+            "id": 8109890994212,
+            "title": "Atlantic Ultraviolet UV Quartz Sleeve - Replacement Part",
+            "body_html": "<h3>Atlantic Ultraviolet UV Quartz Sleeve - Replacement Part</h3><p>Genuine replacement quartz sleeve for Atlantic Ultraviolet water sterilization systems. This precision-engineered quartz glass sleeve protects the UV lamp while allowing maximum UV-C light transmission for effective water purification.</p><ul>\n<li>\n<strong>High-Purity Quartz</strong> - Superior UV-C light transmission for optimal sterilization</li>\n<li>\n<strong>Precision Fit</strong> - Designed specifically for Atlantic Ultraviolet systems</li>\n<li>\n<strong>Durable Construction</strong> - Resistant to thermal shock and chemical corrosion</li>\n<li>\n<strong>Critical Component</strong> - Protects UV lamp from water contact while maintaining effectiveness</li>\n<li>\n<strong>Easy Replacement</strong> - Direct OEM replacement part</li>\n</ul><p><strong>Part Number:</strong> 15-1051A4<br><strong>SKU:</strong> 15-1051A4<br><strong>Application:</strong> Atlantic Ultraviolet water sterilization systems</p><p>Replace quartz sleeves regularly or when cracked, clouded, or damaged to maintain water purification effectiveness. Clean sleeves periodically to remove mineral deposits and ensure maximum UV transmission. Essential for safe, bacteria-free freshwater on your vessel.</p>",
+            "vendor": "Marisol Marine Company",
+            "product_type": "",
+            "created_at": "2026-01-25T17:48:10-08:00",
+            "handle": "atlantic-ultraviolet-uv-quartz-sleeve",
+            "updated_at": "2026-01-31T02:40:30-08:00",
+            "published_at": "2026-01-25T17:48:10-08:00",
+            "template_suffix": null,
+            "published_scope": "global",
+            "tags": "brand:atlantic-ultraviolet, cat:plumbing, cat:water-treatment, sys:water-systems",
+            "status": "active",
+            "admin_graphql_api_id": "gid://shopify/Product/8109890994212",
+            "variants": [
+                {
+                    "id": 43206034030628,
+                    "product_id": 8109890994212,
+                    "title": "Default Title",
+                    "price": "70.10",
+                    "position": 1,
+                    "inventory_policy": "deny",
+                    "compare_at_price": null,
+                    "option1": "Default Title",
+                    "option2": null,
+                    "option3": null,
+                    "created_at": "2026-01-25T17:48:10-08:00",
+                    "updated_at": "2026-01-25T17:48:10-08:00",
+                    "taxable": true,
+                    "barcode": "15-1051A4",
+                    "fulfillment_service": "manual",
+                    "grams": 0,
+                    "inventory_management": null,
+                    "requires_shipping": true,
+                    "sku": "15-1051A4",
+                    "weight": 0.0,
+                    "weight_unit": "kg",
+                    "inventory_item_id": 45273048875044,
+                    "inventory_quantity": 0,
+                    "old_inventory_quantity": 0,
+                    "admin_graphql_api_id": "gid://shopify/ProductVariant/43206034030628",
+                    "image_id": null
+                }
+            ],
+            "options": [
+                {
+                    "id": 10580608253988,
+                    "product_id": 8109890994212,
+                    "name": "Title",
+                    "position": 1,
+                    "values": [
+                        "Default Title"
+                    ]
+                }
+            ],
+            "images": [
+                {
+                    "id": 37367799218212,
+                    "alt": null,
+                    "position": 1,
+                    "product_id": 8109890994212,
+                    "created_at": "2026-01-30T13:54:48-08:00",
+                    "updated_at": "2026-01-30T13:54:54-08:00",
+                    "admin_graphql_api_id": "gid://shopify/MediaImage/28055896391716",
+                    "width": 1024,
+                    "height": 1024,
+                    "src": "https://cdn.shopify.com/s/files/1/0743/5799/7604/files/AtlanticUltravioletUVQuartzSleeve.png?v=1769810090",
+                    "variant_ids": []
+                }
+            ],
+            "image": {
+                "id": 37367799218212,
+                "alt": null,
+                "position": 1,
+                "product_id": 8109890994212,
+                "created_at": "2026-01-30T13:54:48-08:00",
+                "updated_at": "2026-01-30T13:54:54-08:00",
+                "admin_graphql_api_id": "gid://shopify/MediaImage/28055896391716",
+                "width": 1024,
+                "height": 1024,
+                "src": "https://cdn.shopify.com/s/files/1/0743/5799/7604/files/AtlanticUltravioletUVQuartzSleeve.png?v=1769810090",
+                "variant_ids": []
+            }
+        }
+    ]
+}
