@@ -1,3 +1,6 @@
+# Shopify Inventory Manager
+
+```text
 *******************************************************************************
                           SHOPIFY INVENTORY MANAGER
 *******************************************************************************
@@ -62,6 +65,10 @@ Inventory Source (Commander) -> Watch Folder -> Rust Engine -> Shopify API
 -------------------------------------------------------------------------------
                                   Usage Tips
 -------------------------------------------------------------------------------
+
+- API REFRESH: The system handles API token rotation automatically. However, 
+  if you encounter connectivity issues, you can force an update by using 
+  'OPEN_MENU.bat' and selecting "5. Refresh API Token Manually".
 
 - MOCK MODE: Set MOCK_MODE=true in .env to safely simulate updates. The app 
   will show you what it WOULD do without changing your live Shopify data.
