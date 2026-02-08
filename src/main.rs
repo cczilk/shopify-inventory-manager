@@ -25,7 +25,7 @@ enum ShopifyClient {
 }
 
 impl ShopifyClient {
-    async fn create_product(&self, product: &models::Product) -> Result<()> {
+    async fn create_product(&mut self, product: &models::Product) -> Result<()> {
         match self {
             ShopifyClient::Real(s) => s.create_product(product).await,
             ShopifyClient::Mock(s) => s.update_product_on_shopify(product).await,

@@ -1,6 +1,6 @@
 use crate::models::*;
 use anyhow::{anyhow, Result};
-use reqwest::{header, Client};
+use reqwest::{header, Client, Method};
 use serde_json::json;
 use std::env;
 use std::fs;
@@ -40,6 +40,28 @@ impl ShopifyService {
         }
     }
 
+    
+    async fn request_with_retry(&mut self, method: Method, url: &str, body: Option<serde_json::Value>) -> Result<reqwest::Response> {
+        let mut attempt = 0;
+        loop {
+            let mut req = self.client.request(method.clone(), url);
+            if let Some(ref b) = body {
+                req = req.json(b);
+            }
+
+            let res = req.send().await?;
+
+            if res.status() == reqwest::StatusCode::UNAUTHORIZED && attempt == 0 {
+                warn!("Shopify API returned 401. Attempting token refresh...");
+                self.refresh_daily_token().await?;
+                attempt += 1;
+                continue; 
+            }
+
+            return Ok(res);
+        }
+    }
+
     pub async fn refresh_daily_token(&mut self) -> Result<()> {
         let store_url = env::var("SHOPIFY_STORE_URL")?;
         let client_id = env::var("CLIENT_ID")?;
@@ -52,7 +74,9 @@ impl ShopifyService {
             "grant_type": "client_credentials"
         });
 
-        let response = self.client.post(&url).json(&body).send().await?;
+        
+        let oauth_client = Client::new();
+        let response = oauth_client.post(&url).json(&body).send().await?;
 
         if response.status().is_success() {
             let data: serde_json::Value = response.json().await?;
@@ -77,10 +101,11 @@ impl ShopifyService {
                 .default_headers(headers)
                 .build()?;
 
-            info!("Token updated successfully");
+            info!("Token updated successfully in memory and .env");
             Ok(())
         } else {
             let err = response.text().await?;
+            error!("OAuth Refresh Failed: {}", err);
             Err(anyhow!("Token refresh failed: {}", err))
         }
     }
@@ -112,9 +137,7 @@ impl ShopifyService {
     }
 
     async fn get_location_id(&mut self) -> Result<i64> {
-        if let Some(id) = self.location_id {
-            return Ok(id);
-        }
+        if let Some(id) = self.location_id { return Ok(id); }
 
         if let Ok(id_str) = env::var("SHOPIFY_LOCATION_ID") {
             if let Ok(id) = id_str.parse::<i64>() {
@@ -124,18 +147,14 @@ impl ShopifyService {
         }
 
         let url = format!("{}/locations.json", self.base_url);
-        let response = self.client.get(&url).send().await?;
+        let response = self.request_with_retry(Method::GET, &url, None).await?;
 
         if !response.status().is_success() {
-            return Err(anyhow!("Failed to fetch locations: {}. Please set SHOPIFY_LOCATION_ID in your .env", response.status()));
+            return Err(anyhow!("Failed to fetch locations: {}", response.status()));
         }
 
         let locations: ShopifyLocationsResponse = response.json().await?;
-        let location_id = locations
-            .locations
-            .first()
-            .ok_or_else(|| anyhow!("No locations found"))?
-            .id;
+        let location_id = locations.locations.first().ok_or_else(|| anyhow!("No locations found"))?.id;
 
         self.location_id = Some(location_id);
         Ok(location_id)
@@ -143,30 +162,16 @@ impl ShopifyService {
 
     pub async fn update_inventory(&mut self, product: &Product) -> Result<()> {
         let loc_id = self.get_location_id().await?;
-        info!("🔎 Power-Syncing SKU: {}", product.sku);
+        info!("Power-Syncing SKU: {}", product.sku);
 
-        
         let graphql_url = format!("{}/graphql.json", self.base_url);
         let query = json!({
-            "query": format!(r#"
-                {{
-                    productVariants(first: 1, query: "sku:{}") {{
-                        edges {{
-                            node {{
-                                inventoryItem {{
-                                    id
-                                }}
-                            }}
-                        }}
-                    }}
-                }}
-            "#, product.sku)
+            "query": format!(r#"{{ productVariants(first: 1, query: "sku:{}") {{ edges {{ node {{ inventoryItem {{ id }} }} }} }} }}"#, product.sku)
         });
 
-        let res = self.client.post(&graphql_url).json(&query).send().await?;
+        let res = self.request_with_retry(Method::POST, &graphql_url, Some(query)).await?;
         let data: serde_json::Value = res.json().await?;
 
-        // Extract the ID from the GraphQL response
         let inventory_item_id_raw = data["data"]["productVariants"]["edges"]
             .as_array()
             .and_then(|edges| edges.first())
@@ -175,12 +180,11 @@ impl ShopifyService {
         let inv_id = match inventory_item_id_raw.and_then(|id| id.split('/').last()).and_then(|id| id.parse::<i64>().ok()) {
             Some(id) => id,
             None => {
-                warn!("⚠️ SKU {} not found via GraphQL. Skipping.", product.sku);
-                return Err(anyhow!("SKU {} not found", product.sku));
+                warn!("SKU {} not found. Skipping.", product.sku);
+                return Err(anyhow!("SKU not found"));
             }
         };
 
-        
         let update_url = format!("{}/inventory_levels/set.json", self.base_url);
         let body = json!({
             "location_id": loc_id,
@@ -189,44 +193,32 @@ impl ShopifyService {
             "disconnect_if_necessary": true
         });
 
-        let res = self.client.post(&update_url).json(&body).send().await?;
+        let res = self.request_with_retry(Method::POST, &update_url, Some(body.clone())).await?;
         let mut status = res.status();
         let mut text = res.text().await?;
 
-        
         if text.contains("inventory tracking enabled") {
-            info!("🔧 Auto-Enabling tracking for SKU: {}", product.sku);
+            info!("Auto-Enabling tracking for SKU: {}", product.sku);
             let track_url = format!("{}/inventory_items/{}.json", self.base_url, inv_id);
-            let track_body = json!({
-                "inventory_item": {
-                    "id": inv_id,
-                    "tracked": true
-                }
-            });
+            let track_body = json!({ "inventory_item": { "id": inv_id, "tracked": true } });
             
-            // Turn on tracking
-            let _ = self.client.put(&track_url).json(&track_body).send().await?;
-            
-            // Retry the original inventory update
-            let retry_res = self.client.post(&update_url).json(&body).send().await?;
+            let _ = self.request_with_retry(Method::PUT, &track_url, Some(track_body)).await?;
+            let retry_res = self.request_with_retry(Method::POST, &update_url, Some(body)).await?;
             status = retry_res.status();
             text = retry_res.text().await?;
         }
 
         if status.is_success() {
-            println!("SUCCESS: {} updated to {}", product.sku, product.inventory_quantity);
-            info!("Successfully updated SKU: {} to qty: {}", product.sku, product.inventory_quantity);
+            info!("SUCCESS: {} updated to {}", product.sku, product.inventory_quantity);
             Ok(())
         } else {
-            println!("SHOPIFY REJECTED {}: {}", product.sku, text);
             error!("Inventory update failed for {}: {}", product.sku, text);
             Err(anyhow!("Shopify API rejection"))
         }
     }
 
-    pub async fn create_product(&self, product: &Product) -> Result<()> {
+    pub async fn create_product(&mut self, product: &Product) -> Result<()> {
         let url = format!("{}/products.json", self.base_url);
-        
         let body = json!({
             "product": {
                 "title": product.title,
@@ -245,23 +237,17 @@ impl ShopifyService {
             }
         });
 
-        let response = self.client.post(&url).json(&body).send().await?;
+        let response = self.request_with_retry(Method::POST, &url, Some(body)).await?;
         
         if response.status().is_success() {
             let res_json: serde_json::Value = response.json().await?;
-            
             if let Some(variant) = res_json["product"]["variants"].as_array().and_then(|v| v.first()) {
                 if let Some(inv_id) = variant["inventory_item_id"].as_i64() {
                     let cost_url = format!("{}/inventory_items/{}.json", self.base_url, inv_id);
                     let cost_body = json!({
-                        "inventory_item": {
-                            "id": inv_id,
-                            "cost": product.cost.to_string(),
-                            "tracked": true 
-                        }
+                        "inventory_item": { "id": inv_id, "cost": product.cost.to_string(), "tracked": true }
                     });
-                    
-                    let _ = self.client.put(&cost_url).json(&cost_body).send().await?;
+                    let _ = self.request_with_retry(Method::PUT, &cost_url, Some(cost_body)).await?;
                 }
             }
             Ok(())
