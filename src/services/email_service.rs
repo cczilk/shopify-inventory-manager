@@ -1,4 +1,5 @@
 use lettre::transport::smtp::authentication::Credentials;
+use lettre::transport::smtp::client::{Tls, TlsParameters};
 use lettre::{Message, SmtpTransport, Transport};
 use std::env;
 use tracing::{info, error};
@@ -12,7 +13,7 @@ pub struct EmailService {
 
 impl EmailService {
     pub fn new() -> Self {
-        let smtp_server = env::var("SMTP_SERVER").unwrap_or_default().trim().to_string();
+        let smtp_server = env::var("SMTP_SERVER").unwrap_or_else(|_| "smtp.gmail.com".to_string()).trim().to_string();
         let smtp_user = env::var("SMTP_USER").unwrap_or_default().trim().to_string();
         let smtp_pass = env::var("SMTP_PASS").unwrap_or_default().trim().to_string();
         let smtp_port = env::var("SMTP_PORT")
@@ -32,10 +33,17 @@ impl EmailService {
     fn get_transport(&self) -> SmtpTransport {
         let (server, user, pass, port) = &self.mailer_config;
         let creds = Credentials::new(user.clone(), pass.clone());
-        SmtpTransport::relay(server)
-            .unwrap()
+
+        
+        
+        let tls_params = TlsParameters::new(server.clone())
+            .expect("Failed to create TLS parameters");
+
+        SmtpTransport::starttls_relay(server)
+            .expect("Failed to create SMTP transport")
             .port(*port)
             .credentials(creds)
+            .tls(Tls::Required(tls_params)) 
             .build()
     }
 
@@ -48,7 +56,11 @@ impl EmailService {
     }
 
     fn execute_send(&self, subject: &str, body: &str) {
-        
+        if self.sender_email.is_empty() || self.admin_email.is_empty() {
+            error!("Email service not fully configured. Skipping send.");
+            return;
+        }
+
         let from_addr = match self.sender_email.parse() {
             Ok(a) => a,
             Err(e) => { error!("Invalid SMTP_USER email format: '{}' - Error: {}", self.sender_email, e); return; }
@@ -58,7 +70,6 @@ impl EmailService {
             Err(e) => { error!("Invalid NOTIFICATION_EMAIL format: '{}' - Error: {}", self.admin_email, e); return; }
         };
 
-        
         let email_res = Message::builder()
             .from(from_addr)
             .to(to_addr)
@@ -67,6 +78,7 @@ impl EmailService {
 
         match email_res {
             Ok(email) => {
+                
                 match self.get_transport().send(&email) {
                     Ok(_) => info!("Email notification sent successfully to {}", self.admin_email),
                     Err(e) => error!("SMTP Relay failed: {:?}", e),
