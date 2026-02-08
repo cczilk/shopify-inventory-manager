@@ -5,7 +5,7 @@ use serde_json::json;
 use std::env;
 use std::fs;
 use std::io::Write;
-use tracing::info;
+use tracing::{info, warn, error};
 
 #[derive(Clone)]
 pub struct ShopifyService {
@@ -143,53 +143,90 @@ impl ShopifyService {
 
     pub async fn update_inventory(&mut self, product: &Product) -> Result<()> {
         let loc_id = self.get_location_id().await?;
+        info!("🔎 Power-Syncing SKU: {}", product.sku);
+
         
-        
-        let mut retry_count = 0;
-        while retry_count < 2 {
-            let search_url = format!("{}/variants.json?sku={}", self.base_url, product.sku);
-            let response = self.client.get(&search_url).send().await?;
-            
-            if response.status() == 401 {
-                self.refresh_daily_token().await?;
-                retry_count += 1;
-                continue;
+        let graphql_url = format!("{}/graphql.json", self.base_url);
+        let query = json!({
+            "query": format!(r#"
+                {{
+                    productVariants(first: 1, query: "sku:{}") {{
+                        edges {{
+                            node {{
+                                inventoryItem {{
+                                    id
+                                }}
+                            }}
+                        }}
+                    }}
+                }}
+            "#, product.sku)
+        });
+
+        let res = self.client.post(&graphql_url).json(&query).send().await?;
+        let data: serde_json::Value = res.json().await?;
+
+        // Extract the ID from the GraphQL response
+        let inventory_item_id_raw = data["data"]["productVariants"]["edges"]
+            .as_array()
+            .and_then(|edges| edges.first())
+            .and_then(|edge| edge["node"]["inventoryItem"]["id"].as_str());
+
+        let inv_id = match inventory_item_id_raw.and_then(|id| id.split('/').last()).and_then(|id| id.parse::<i64>().ok()) {
+            Some(id) => id,
+            None => {
+                warn!("⚠️ SKU {} not found via GraphQL. Skipping.", product.sku);
+                return Err(anyhow!("SKU {} not found", product.sku));
             }
+        };
 
-            let data: serde_json::Value = response.json().await?;
-            let variants = data["variants"].as_array().ok_or_else(|| anyhow!("Invalid response for SKU {}", product.sku))?;
-            
-            let variant = variants.iter().find(|v| v["sku"] == product.sku)
-                .ok_or_else(|| anyhow!("SKU {} not found on Shopify", product.sku))?;
+        
+        let update_url = format!("{}/inventory_levels/set.json", self.base_url);
+        let body = json!({
+            "location_id": loc_id,
+            "inventory_item_id": inv_id,
+            "available": product.inventory_quantity,
+            "disconnect_if_necessary": true
+        });
 
-            let inventory_item_id = variant["inventory_item_id"].as_i64()
-                .ok_or_else(|| anyhow!("No inventory_item_id for SKU {}", product.sku))?;
+        let res = self.client.post(&update_url).json(&body).send().await?;
+        let mut status = res.status();
+        let mut text = res.text().await?;
 
-            let update_url = format!("{}/inventory_levels/set.json", self.base_url);
-            let body = json!({
-                "location_id": loc_id,
-                "inventory_item_id": inventory_item_id,
-                "available": product.inventory_quantity
+        
+        if text.contains("inventory tracking enabled") {
+            info!("🔧 Auto-Enabling tracking for SKU: {}", product.sku);
+            let track_url = format!("{}/inventory_items/{}.json", self.base_url, inv_id);
+            let track_body = json!({
+                "inventory_item": {
+                    "id": inv_id,
+                    "tracked": true
+                }
             });
-
-            let update_response = self.client.post(&update_url).json(&body).send().await?;
-
-            if update_response.status().is_success() {
-                info!("Successfully updated SKU: {} to qty: {}", product.sku, product.inventory_quantity);
-                return Ok(());
-            } else {
-                let err_msg = update_response.text().await?;
-                return Err(anyhow!("Inventory update failed for {}: {}", product.sku, err_msg));
-            }
+            
+            // Turn on tracking
+            let _ = self.client.put(&track_url).json(&track_body).send().await?;
+            
+            // Retry the original inventory update
+            let retry_res = self.client.post(&update_url).json(&body).send().await?;
+            status = retry_res.status();
+            text = retry_res.text().await?;
         }
-        
-        Err(anyhow!("Failed to update inventory for {} after token refresh", product.sku))
+
+        if status.is_success() {
+            println!("SUCCESS: {} updated to {}", product.sku, product.inventory_quantity);
+            info!("Successfully updated SKU: {} to qty: {}", product.sku, product.inventory_quantity);
+            Ok(())
+        } else {
+            println!("SHOPIFY REJECTED {}: {}", product.sku, text);
+            error!("Inventory update failed for {}: {}", product.sku, text);
+            Err(anyhow!("Shopify API rejection"))
+        }
     }
 
     pub async fn create_product(&self, product: &Product) -> Result<()> {
         let url = format!("{}/products.json", self.base_url);
         
-       
         let body = json!({
             "product": {
                 "title": product.title,
@@ -213,7 +250,6 @@ impl ShopifyService {
         if response.status().is_success() {
             let res_json: serde_json::Value = response.json().await?;
             
-            
             if let Some(variant) = res_json["product"]["variants"].as_array().and_then(|v| v.first()) {
                 if let Some(inv_id) = variant["inventory_item_id"].as_i64() {
                     let cost_url = format!("{}/inventory_items/{}.json", self.base_url, inv_id);
@@ -225,11 +261,7 @@ impl ShopifyService {
                         }
                     });
                     
-                    
-                    let cost_res = self.client.put(&cost_url).json(&cost_body).send().await?;
-                    if cost_res.status().is_success() {
-                        println!("Created {} with Cost: {}", product.sku, product.cost);
-                    }
+                    let _ = self.client.put(&cost_url).json(&cost_body).send().await?;
                 }
             }
             Ok(())
