@@ -210,15 +210,45 @@ async fn main() -> Result<()> {
             
             match input.trim() {
                 "1" => {
-                    print!("Enter CSV path: ");
+                    print!("Enter file path (CSV/XLSX): ");
                     std::io::stdout().flush()?;
                     let mut path_str = String::new();
                     std::io::stdin().read_line(&mut path_str)?;
-                    let path = PathBuf::from(path_str.trim());
-                    if let Ok(count) = update_inventory_from_file(&csv_service, &mut shopify, path_str.trim()).await {
-                        let _ = shopify.save_state().await;
-                        let _ = file_watcher.move_to_processed(&path).await;
-                        println!("Sync complete ({} items).", count);
+                    
+                    let cleaned_path = path_str.trim().trim_matches('"');
+                    let path = PathBuf::from(cleaned_path);
+
+                    if !path.exists() {
+                        error!("File not found: {:?}", path);
+                        continue;
+                    }
+
+                    
+                    let target_path = if FileWatcher::is_excel_file(&path) {
+                        let out = path.with_extension("csv");
+                        let converter = ExcelConverter::new();
+                        info!("Converting Excel to CSV for inventory update...");
+                        match converter.convert_to_shopify_csv(path.to_str().unwrap(), out.to_str().unwrap()).await {
+                            Ok(_) => out.to_string_lossy().to_string(),
+                            Err(e) => { 
+                                error!("Conversion failed: {}", e); 
+                                continue; 
+                            }
+                        }
+                    } else {
+                        cleaned_path.to_string()
+                    };
+
+                    match update_inventory_from_file(&csv_service, &mut shopify, &target_path).await {
+                        Ok(count) => {
+                            let _ = shopify.save_state().await;
+                            let _ = file_watcher.move_to_processed(&path).await;
+                            println!("Update complete ({} items).", count);
+                        }
+                        Err(e) => {
+                            error!("Update failed: {}", e);
+                            println!("Error: {}", e);
+                        }
                     }
                 }
                 "2" => {
