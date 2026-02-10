@@ -27,14 +27,14 @@ enum ShopifyClient {
 impl ShopifyClient {
     async fn create_product(&mut self, product: &models::Product) -> Result<()> {
         match self {
-            ShopifyClient::Real(s) => s.create_product(product).await,
+            ShopifyClient::Real(s) => s.upsert_product(product).await, 
             ShopifyClient::Mock(s) => s.update_product_on_shopify(product).await,
         }
     }
 
     async fn update_inventory(&mut self, product: &models::Product) -> Result<()> {
         match self {
-            ShopifyClient::Real(s) => s.update_inventory(product).await,
+            ShopifyClient::Real(s) => s.upsert_product(product).await, 
             ShopifyClient::Mock(s) => s.update_product_on_shopify(product).await,
         }
     }
@@ -65,7 +65,7 @@ impl Clone for ShopifyClient {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // --- FORCE LOAD ENV FROM EXE DIRECTORY ---
+    
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
             let env_path = exe_dir.join(".env");
@@ -128,7 +128,6 @@ async fn main() -> Result<()> {
     if is_service {
         info!("Service mode: Initializing daily sync timer...");
         loop {
-            // Re-read env inside loop to stay fresh
             dotenv::dotenv().ok();
             let sync_hour: u32 = env::var("SYNC_HOUR").unwrap_or_else(|_| "0".to_string()).trim().parse().unwrap_or(0);
             let sync_min: u32 = env::var("SYNC_MINUTE").unwrap_or_else(|_| "0".to_string()).trim().parse().unwrap_or(0);
@@ -168,11 +167,11 @@ async fn main() -> Result<()> {
                         match process_single_file(&path, &csv_service, &mut shopify, &file_watcher).await {
                             Ok(count) => {
                                 total_synced += count;
-                                report_body.push_str(&format!("✅ {:?} ({} items)\n", path.file_name(), count));
+                                report_body.push_str(&format!("Success {:?} ({} items)\n", path.file_name(), count));
                             },
                             Err(e) => {
                                 total_failed += 1;
-                                report_body.push_str(&format!("❌ {:?} - {}\n", path.file_name(), e));
+                                report_body.push_str(&format!("Failed {:?} - {}\n", path.file_name(), e));
                             }
                         }
                     }
