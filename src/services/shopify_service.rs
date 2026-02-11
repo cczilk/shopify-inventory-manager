@@ -121,27 +121,54 @@ impl ShopifyService {
 
     
     async fn find_variant_by_sku(&self, sku: &str) -> Result<Option<serde_json::Value>> {
-        let url = format!("{}/variants.json?sku={}", self.base_url, sku);
-        let response = self.client.get(&url).send().await?;
-        
-        if response.status() == 401 { return Err(anyhow!("UNAUTHORIZED")); }
+    let url = format!("{}/graphql.json", self.base_url.replace("/admin/api/2024-01", "/admin/api/2024-01"));
+    
+    let query = json!({
+        "query": r#"
+            query($sku: String!) {
+                productVariants(first: 1, query: $sku) {
+                    edges {
+                        node {
+                            id
+                            sku
+                            price
+                            inventoryItem {
+                                id
+                            }
+                        }
+                    }
+                }
+            }
+        "#,
+        "variables": { "sku": format!("sku:{}", sku) }
+    });
 
-        let data: serde_json::Value = response.json().await?;
-        let variants = data["variants"].as_array();
-        
-        if let Some(list) = variants {
-            let found = list.iter().find(|v| v["sku"].as_str() == Some(sku)).cloned();
-            return Ok(found);
+    let response = self.client.post(&url).json(&query).send().await?;
+    let data: serde_json::Value = response.json().await?;
+
+    if let Some(edges) = data["data"]["productVariants"]["edges"].as_array() {
+        if let Some(node) = edges.first().map(|e| &e["node"]) {
+            if node["sku"].as_str() == Some(sku) {
+                let id_raw = node["id"].as_str().unwrap_or("");
+                let variant_id = id_raw.split('/').last().unwrap_or("0").parse::<i64>().unwrap_or(0);
+                
+                let inv_id_raw = node["inventoryItem"]["id"].as_str().unwrap_or("");
+                let inv_item_id = inv_id_raw.split('/').last().unwrap_or("0").parse::<i64>().unwrap_or(0);
+
+                return Ok(Some(json!({
+                    "id": variant_id,
+                    "inventory_item_id": inv_item_id,
+                    "price": node["price"].as_str().unwrap_or("0.00"),
+                    "sku": sku
+                })));
+            }
         }
-        Ok(None)
     }
-
+    Ok(None)
+}
    
 
-    pub async fn upsert_product(&mut self, product: &Product) -> Result<()> {
-        let loc_id = self.get_location_id().await?;
-        
-        
+pub async fn upsert_product(&mut self, product: &Product) -> Result<()> {
         let existing = match self.find_variant_by_sku(&product.sku).await {
             Ok(v) => v,
             Err(e) if e.to_string() == "UNAUTHORIZED" => {
@@ -153,45 +180,44 @@ impl ShopifyService {
 
         match existing {
             Some(variant) => {
-                
                 let inv_item_id = variant["inventory_item_id"].as_i64().unwrap();
-                let variant_id = variant["id"].as_i64().unwrap();
-                let current_price = variant["price"].as_str().unwrap_or("0.00");
-
                 
-                if current_price != product.price.to_string() {
-                    let price_url = format!("{}/variants/{}.json", self.base_url, variant_id);
-                    let price_body = json!({ "variant": { "id": variant_id, "price": product.price.to_string() } });
-                    let _ = self.client.put(&price_url).json(&price_body).send().await?;
-                    info!("Price updated for SKU: {}", product.sku);
-                }
+                let levels_url = format!("{}/inventory_levels.json?inventory_item_ids={}", self.base_url, inv_item_id);
+                let levels_res = self.client.get(&levels_url).send().await?;
+                let levels_data: serde_json::Value = levels_res.json().await?;
+                
+                
+                let actual_loc_id = levels_data["inventory_levels"]
+                    .as_array()
+                    .and_then(|list| list.first())
+                    .and_then(|lvl| lvl["location_id"].as_i64())
+                    .unwrap_or_else(|| {
+                        
+                        env::var("SHOPIFY_LOCATION_ID").unwrap_or_default().parse().unwrap_or(0)
+                    });
 
                 
                 let update_url = format!("{}/inventory_levels/set.json", self.base_url);
                 let body = json!({
-                    "location_id": loc_id,
+                    "location_id": actual_loc_id,
                     "inventory_item_id": inv_item_id,
-                    "available": product.inventory_quantity 
+                    "available": product.inventory_quantity
                 });
 
                 let res = self.client.post(&update_url).json(&body).send().await?;
                 if res.status().is_success() {
-                    info!("Synced existing SKU: {} (Qty: {})", product.sku, product.inventory_quantity);
+                    info!("Successfully updated SKU: {} at Location: {}", product.sku, actual_loc_id);
                     Ok(())
                 } else {
-                    let err = res.text().await?;
-                    Err(anyhow!("Inventory set failed for {}: {}", product.sku, err))
+                    error!("Still failed at location {}: {}", actual_loc_id, res.text().await?);
+                    Err(anyhow!("Inventory update failed"))
                 }
             },
             None => {
-                
-                info!("Creating new product for SKU: {}", product.sku);
                 self.create_product(product).await
             }
         }
     }
-
-   
 
     pub async fn update_inventory(&mut self, product: &Product) -> Result<()> {
         self.upsert_product(product).await
@@ -218,7 +244,6 @@ impl ShopifyService {
 
         let response = self.client.post(&url).json(&body).send().await?;
         if response.status().is_success() {
-            
             let res_json: serde_json::Value = response.json().await?;
             if let Some(variant) = res_json["product"]["variants"].as_array().and_then(|v| v.first()) {
                 if let Some(inv_id) = variant["inventory_item_id"].as_i64() {
