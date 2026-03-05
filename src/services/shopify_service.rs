@@ -171,71 +171,74 @@ impl ShopifyService {
         Ok(None)
     }
 
-    pub async fn upsert_product(&mut self, product: &Product) -> Result<()> {
-        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+pub async fn upsert_product(&mut self, product: &Product) -> Result<()> {
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-        let existing = match self.find_variant_by_sku(&product.sku).await {
-            Ok(v) => v,
-            Err(e) if e.to_string() == "UNAUTHORIZED" => {
-                self.refresh_daily_token().await?;
-                self.find_variant_by_sku(&product.sku).await?
-            }
-            Err(e) => return Err(e),
-        };
+    let existing = match self.find_variant_by_sku(&product.sku).await {
+        Ok(v) => v,
+        Err(e) if e.to_string() == "UNAUTHORIZED" => {
+            self.refresh_daily_token().await?;
+            self.find_variant_by_sku(&product.sku).await?
+        }
+        Err(e) => return Err(e),
+    };
 
-        match existing {
-            Some(variant) => {
-                let variant_id = variant["id"].as_i64().unwrap();
-                let inv_item_id = variant["inventory_item_id"].as_i64().unwrap();
+    match existing {
+        Some(variant) => {
+            let variant_id = variant["id"].as_i64().unwrap();
+            let inv_item_id = variant["inventory_item_id"].as_i64().unwrap();
 
-                let levels_url = format!("{}/inventory_levels.json?inventory_item_ids={}", self.base_url, inv_item_id);
-                let levels_res = self.client.get(&levels_url).send().await?;
-                let levels_data: serde_json::Value = levels_res.json().await?;
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            let levels_url = format!("{}/inventory_levels.json?inventory_item_ids={}", self.base_url, inv_item_id);
+            let levels_res = self.client.get(&levels_url).send().await?;
+            let levels_data: serde_json::Value = levels_res.json().await?;
 
-                let actual_loc_id = levels_data["inventory_levels"]
-                    .as_array()
-                    .and_then(|list| list.first())
-                    .and_then(|lvl| lvl["location_id"].as_i64())
-                    .unwrap_or_else(|| {
-                        env::var("SHOPIFY_LOCATION_ID").unwrap_or_default().parse().unwrap_or(0)
-                    });
-
-                let inventory_url = format!("{}/inventory_levels/set.json", self.base_url);
-                let inventory_body = json!({
-                    "location_id": actual_loc_id,
-                    "inventory_item_id": inv_item_id,
-                    "available": product.inventory_quantity
+            let actual_loc_id = levels_data["inventory_levels"]
+                .as_array()
+                .and_then(|list| list.first())
+                .and_then(|lvl| lvl["location_id"].as_i64())
+                .unwrap_or_else(|| {
+                    env::var("SHOPIFY_LOCATION_ID").unwrap_or_default().parse().unwrap_or(0)
                 });
 
-                let inv_res = self.client.post(&inventory_url).json(&inventory_body).send().await?;
-                if !inv_res.status().is_success() {
-                    error!("Inventory update failed at location {}: {}", actual_loc_id, inv_res.text().await?);
-                    return Err(anyhow!("Inventory update failed"));
-                }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            let inventory_url = format!("{}/inventory_levels/set.json", self.base_url);
+            let inventory_body = json!({
+                "location_id": actual_loc_id,
+                "inventory_item_id": inv_item_id,
+                "available": product.inventory_quantity
+            });
 
-                let variant_url = format!("{}/variants/{}.json", self.base_url, variant_id);
-                let price_body = json!({
-                    "variant": {
-                        "id": variant_id,
-                        "price": product.price.to_string(),
-                        "compare_at_price": product.compare_at_price.to_string()
-                    }
-                });
-
-                let price_res = self.client.put(&variant_url).json(&price_body).send().await?;
-                if price_res.status().is_success() {
-                    info!("Successfully updated SKU: {} at Location: {}", product.sku, actual_loc_id);
-                    Ok(())
-                } else {
-                    error!("Price update failed for SKU {}: {}", product.sku, price_res.text().await?);
-                    Err(anyhow!("Price update failed"))
-                }
+            let inv_res = self.client.post(&inventory_url).json(&inventory_body).send().await?;
+            if !inv_res.status().is_success() {
+                error!("Inventory update failed at location {}: {}", actual_loc_id, inv_res.text().await?);
+                return Err(anyhow!("Inventory update failed"));
             }
-            None => {
-                self.create_product(product).await
+
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            let variant_url = format!("{}/variants/{}.json", self.base_url, variant_id);
+            let price_body = json!({
+                "variant": {
+                    "id": variant_id,
+                    "price": product.price.to_string(),
+                    "compare_at_price": product.compare_at_price.to_string()
+                }
+            });
+
+            let price_res = self.client.put(&variant_url).json(&price_body).send().await?;
+            if price_res.status().is_success() {
+                info!("Successfully updated SKU: {} at Location: {}", product.sku, actual_loc_id);
+                Ok(())
+            } else {
+                error!("Price update failed for SKU {}: {}", product.sku, price_res.text().await?);
+                Err(anyhow!("Price update failed"))
             }
         }
+        None => {
+            self.create_product(product).await
+        }
     }
+}
 
     pub async fn update_inventory(&mut self, product: &Product) -> Result<()> {
         self.upsert_product(product).await
