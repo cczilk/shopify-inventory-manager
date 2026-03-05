@@ -5,7 +5,7 @@ use serde_json::json;
 use std::env;
 use std::fs;
 use std::io::Write;
-use tracing::{info, warn, error};
+use tracing::{info, error};
 
 #[derive(Clone)]
 pub struct ShopifyService {
@@ -46,8 +46,6 @@ impl ShopifyService {
             location_id: None,
         }
     }
-
-    
 
     pub async fn refresh_daily_token(&mut self) -> Result<()> {
         let store_url = env::var("SHOPIFY_STORE_URL")?;
@@ -107,8 +105,6 @@ impl ShopifyService {
         Ok(())
     }
 
-    
-
     async fn get_location_id(&mut self) -> Result<i64> {
         if let Some(id) = self.location_id { return Ok(id); }
         if let Ok(id_str) = env::var("SHOPIFY_LOCATION_ID") {
@@ -126,60 +122,58 @@ impl ShopifyService {
         Ok(location_id)
     }
 
-    
     async fn find_variant_by_sku(&self, sku: &str) -> Result<Option<serde_json::Value>> {
-    let url = format!("{}/graphql.json", self.base_url.replace("/admin/api/2024-01", "/admin/api/2024-01"));
-    
-    let query = json!({
-        "query": r#"
-            query($sku: String!) {
-                productVariants(first: 1, query: $sku) {
-                    edges {
-                        node {
-                            id
-                            sku
-                            price
-                            inventoryItem {
+        let url = format!("{}/graphql.json", self.base_url);
+
+        let query = json!({
+            "query": r#"
+                query($sku: String!) {
+                    productVariants(first: 1, query: $sku) {
+                        edges {
+                            node {
                                 id
+                                sku
+                                price
+                                inventoryItem {
+                                    id
+                                }
                             }
                         }
                     }
                 }
-            }
-        "#,
-        "variables": { "sku": format!("sku:{}", sku) }
-    });
+            "#,
+            "variables": { "sku": format!("sku:{}", sku) }
+        });
 
-    let response = self.client.post(&url).json(&query).send().await?;
-    let data: serde_json::Value = response.json().await?;
+        let response = self.client.post(&url).json(&query).send().await?;
+        let data: serde_json::Value = response.json().await?;
 
-    if let Some(edges) = data["data"]["productVariants"]["edges"].as_array() {
-        if let Some(node) = edges.first().map(|e| &e["node"]) {
-            if normalize_sku_for_comparison(node["sku"].as_str().unwrap_or("")) 
-                == normalize_sku_for_comparison(sku) {
-                let id_raw = node["id"].as_str().unwrap_or("");
-                let variant_id = id_raw.split('/').last().unwrap_or("0").parse::<i64>().unwrap_or(0);
-                
-                let inv_id_raw = node["inventoryItem"]["id"].as_str().unwrap_or("");
-                let inv_item_id = inv_id_raw.split('/').last().unwrap_or("0").parse::<i64>().unwrap_or(0);
+        if let Some(edges) = data["data"]["productVariants"]["edges"].as_array() {
+            if let Some(node) = edges.first().map(|e| &e["node"]) {
+                if normalize_sku_for_comparison(node["sku"].as_str().unwrap_or(""))
+                    == normalize_sku_for_comparison(sku)
+                {
+                    let id_raw = node["id"].as_str().unwrap_or("");
+                    let variant_id = id_raw.split('/').last().unwrap_or("0").parse::<i64>().unwrap_or(0);
 
-                return Ok(Some(json!({
-                    "id": variant_id,
-                    "inventory_item_id": inv_item_id,
-                    "price": node["price"].as_str().unwrap_or("0.00"),
-                    "sku": node["sku"].as_str().unwrap_or(sku)
-                })));
+                    let inv_id_raw = node["inventoryItem"]["id"].as_str().unwrap_or("");
+                    let inv_item_id = inv_id_raw.split('/').last().unwrap_or("0").parse::<i64>().unwrap_or(0);
+
+                    return Ok(Some(json!({
+                        "id": variant_id,
+                        "inventory_item_id": inv_item_id,
+                        "price": node["price"].as_str().unwrap_or("0.00"),
+                        "sku": node["sku"].as_str().unwrap_or(sku)
+                    })));
+                }
             }
         }
+        Ok(None)
     }
-    Ok(None)
-}
-   
 
-pub async fn upsert_product(&mut self, product: &Product) -> Result<()> {
-        // sleep to not overload 2request per second
+    pub async fn upsert_product(&mut self, product: &Product) -> Result<()> {
         tokio::time::sleep(std::time::Duration::from_millis(600)).await;
-        
+
         let existing = match self.find_variant_by_sku(&product.sku).await {
             Ok(v) => v,
             Err(e) if e.to_string() == "UNAUTHORIZED" => {
@@ -191,39 +185,52 @@ pub async fn upsert_product(&mut self, product: &Product) -> Result<()> {
 
         match existing {
             Some(variant) => {
+                let variant_id = variant["id"].as_i64().unwrap();
                 let inv_item_id = variant["inventory_item_id"].as_i64().unwrap();
-                
+
                 let levels_url = format!("{}/inventory_levels.json?inventory_item_ids={}", self.base_url, inv_item_id);
                 let levels_res = self.client.get(&levels_url).send().await?;
                 let levels_data: serde_json::Value = levels_res.json().await?;
-                
-                
+
                 let actual_loc_id = levels_data["inventory_levels"]
                     .as_array()
                     .and_then(|list| list.first())
                     .and_then(|lvl| lvl["location_id"].as_i64())
                     .unwrap_or_else(|| {
-                        
                         env::var("SHOPIFY_LOCATION_ID").unwrap_or_default().parse().unwrap_or(0)
                     });
 
-                
-                let update_url = format!("{}/inventory_levels/set.json", self.base_url);
-                let body = json!({
+                let inventory_url = format!("{}/inventory_levels/set.json", self.base_url);
+                let inventory_body = json!({
                     "location_id": actual_loc_id,
                     "inventory_item_id": inv_item_id,
                     "available": product.inventory_quantity
                 });
 
-                let res = self.client.post(&update_url).json(&body).send().await?;
-                if res.status().is_success() {
+                let inv_res = self.client.post(&inventory_url).json(&inventory_body).send().await?;
+                if !inv_res.status().is_success() {
+                    error!("Inventory update failed at location {}: {}", actual_loc_id, inv_res.text().await?);
+                    return Err(anyhow!("Inventory update failed"));
+                }
+
+                let variant_url = format!("{}/variants/{}.json", self.base_url, variant_id);
+                let price_body = json!({
+                    "variant": {
+                        "id": variant_id,
+                        "price": product.price.to_string(),
+                        "compare_at_price": product.compare_at_price.to_string()
+                    }
+                });
+
+                let price_res = self.client.put(&variant_url).json(&price_body).send().await?;
+                if price_res.status().is_success() {
                     info!("Successfully updated SKU: {} at Location: {}", product.sku, actual_loc_id);
                     Ok(())
                 } else {
-                    error!("Still failed at location {}: {}", actual_loc_id, res.text().await?);
-                    Err(anyhow!("Inventory update failed"))
+                    error!("Price update failed for SKU {}: {}", product.sku, price_res.text().await?);
+                    Err(anyhow!("Price update failed"))
                 }
-            },
+            }
             None => {
                 self.create_product(product).await
             }
@@ -235,7 +242,6 @@ pub async fn upsert_product(&mut self, product: &Product) -> Result<()> {
     }
 
     pub async fn create_product(&self, product: &Product) -> Result<()> {
-        // sleep so not more than 2 request per second
         tokio::time::sleep(std::time::Duration::from_millis(600)).await;
         let url = format!("{}/products.json", self.base_url);
         let body = json!({
@@ -247,7 +253,8 @@ pub async fn upsert_product(&mut self, product: &Product) -> Result<()> {
                 "variants": [{
                     "sku": product.sku,
                     "price": product.price.to_string(),
-                    "inventory_management": "shopify", 
+                    "compare_at_price": product.compare_at_price.to_string(),
+                    "inventory_management": "shopify",
                     "inventory_quantity": product.inventory_quantity,
                     "barcode": product.barcode,
                     "weight": product.weight
