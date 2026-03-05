@@ -1,38 +1,33 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+
+fn deserialize_sku<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    let raw = String::deserialize(d)?;
+    Ok(raw.trim().to_string())
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Product {
-    #[serde(rename = "Item No.")] 
+    #[serde(rename = "Item No.", deserialize_with = "deserialize_sku")]
     pub sku: String,
-
-    #[serde(rename = "Description")] 
+    #[serde(rename = "Description")]
     pub title: String,
-
-    #[serde(default, rename = "Category")] 
+    #[serde(default, rename = "Category")]
     pub handle: String,
-
-    #[serde(rename = "Sell")] 
+    #[serde(rename = "Sell")]
     pub price: f64,
-
-    #[serde(rename = "On Hand")] 
+    #[serde(rename = "On Hand")]
     pub inventory_quantity: i32,
-
     #[serde(default)]
     pub barcode: String,
-
     #[serde(default)]
     pub weight: f64,
-
-    #[serde(default, rename = "Extended Sell")] 
+    #[serde(default, rename = "Extended Sell")]
     pub description: String,
-
-    #[serde(rename = "Cost")] 
+    #[serde(rename = "Cost")]
     pub cost: f64,
-
-    #[serde(default, rename = "List")] 
-    pub compare_at_price: f64, 
-    
-    #[serde(default, rename = "OEM")] 
+    #[serde(default, rename = "List")]
+    pub compare_at_price: f64,
+    #[serde(default, rename = "OEM")]
     pub oem: String,
 }
 

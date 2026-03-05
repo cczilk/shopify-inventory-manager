@@ -14,6 +14,13 @@ pub struct ShopifyService {
     location_id: Option<i64>,
 }
 
+fn normalize_sku_for_comparison(sku: &str) -> String {
+    sku.chars()
+        .filter(|c| c.is_alphanumeric())
+        .collect::<String>()
+        .to_uppercase()
+}
+
 impl ShopifyService {
     pub fn new(store_url: String, access_token: String) -> Self {
         let mut headers = header::HeaderMap::new();
@@ -148,7 +155,8 @@ impl ShopifyService {
 
     if let Some(edges) = data["data"]["productVariants"]["edges"].as_array() {
         if let Some(node) = edges.first().map(|e| &e["node"]) {
-            if node["sku"].as_str() == Some(sku) {
+            if normalize_sku_for_comparison(node["sku"].as_str().unwrap_or("")) 
+                == normalize_sku_for_comparison(sku) {
                 let id_raw = node["id"].as_str().unwrap_or("");
                 let variant_id = id_raw.split('/').last().unwrap_or("0").parse::<i64>().unwrap_or(0);
                 
@@ -159,7 +167,7 @@ impl ShopifyService {
                     "id": variant_id,
                     "inventory_item_id": inv_item_id,
                     "price": node["price"].as_str().unwrap_or("0.00"),
-                    "sku": sku
+                    "sku": node["sku"].as_str().unwrap_or(sku)
                 })));
             }
         }
@@ -169,6 +177,9 @@ impl ShopifyService {
    
 
 pub async fn upsert_product(&mut self, product: &Product) -> Result<()> {
+        // sleep to not overload 2request per second
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        
         let existing = match self.find_variant_by_sku(&product.sku).await {
             Ok(v) => v,
             Err(e) if e.to_string() == "UNAUTHORIZED" => {
@@ -224,6 +235,8 @@ pub async fn upsert_product(&mut self, product: &Product) -> Result<()> {
     }
 
     pub async fn create_product(&self, product: &Product) -> Result<()> {
+        // sleep so not more than 2 request per second
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
         let url = format!("{}/products.json", self.base_url);
         let body = json!({
             "product": {
