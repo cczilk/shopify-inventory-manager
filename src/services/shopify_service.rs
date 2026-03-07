@@ -174,6 +174,7 @@ impl ShopifyService {
 pub async fn upsert_product(&mut self, product: &Product) -> Result<()> {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
+    // find any existing SKU
     let existing = match self.find_variant_by_sku(&product.sku).await {
         Ok(v) => v,
         Err(e) if e.to_string() == "UNAUTHORIZED" => {
@@ -188,33 +189,52 @@ pub async fn upsert_product(&mut self, product: &Product) -> Result<()> {
             let variant_id = variant["id"].as_i64().unwrap();
             let inv_item_id = variant["inventory_item_id"].as_i64().unwrap();
 
+            // FORCE TRACKING ON
+            let item_url = format!("{}/inventory_items/{}.json", self.base_url, inv_item_id);
+            let item_body = json!({ "inventory_item": { "id": inv_item_id, "tracked": true } });
+            let _ = self.client.put(&item_url).json(&item_body).send().await?;
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+            // dynamic location lookui
             let levels_url = format!("{}/inventory_levels.json?inventory_item_ids={}", self.base_url, inv_item_id);
             let levels_res = self.client.get(&levels_url).send().await?;
             let levels_data: serde_json::Value = levels_res.json().await?;
 
-            let actual_loc_id = levels_data["inventory_levels"]
+            let mut actual_loc_id = levels_data["inventory_levels"]
                 .as_array()
                 .and_then(|list| list.first())
                 .and_then(|lvl| lvl["location_id"].as_i64())
-                .unwrap_or_else(|| {
-                    env::var("SHOPIFY_LOCATION_ID").unwrap_or_default().parse().unwrap_or(0)
-                });
+                .unwrap_or(0);
 
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            // check connection
+            if actual_loc_id == 0 {
+                actual_loc_id = env::var("SHOPIFY_LOCATION_ID").unwrap_or_default().parse().unwrap_or(0);
+                let connect_url = format!("{}/inventory_levels/connect.json", self.base_url);
+                let connect_body = json!({
+                    "location_id": actual_loc_id,
+                    "inventory_item_id": inv_item_id
+                });
+                let _ = self.client.post(&connect_url).json(&connect_body).send().await?;
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+
+            // update inv
             let inventory_url = format!("{}/inventory_levels/set.json", self.base_url);
             let inventory_body = json!({
                 "location_id": actual_loc_id,
                 "inventory_item_id": inv_item_id,
-                "available": product.inventory_quantity
+                "available": product.inventory_quantity,
+                "disconnect_if_necessary": true
             });
 
             let inv_res = self.client.post(&inventory_url).json(&inventory_body).send().await?;
             if !inv_res.status().is_success() {
-                error!("Inventory update failed at location {}: {}", actual_loc_id, inv_res.text().await?);
-                return Err(anyhow!("Inventory update failed"));
+                let err = inv_res.text().await?;
+                error!("Inventory update failed for SKU {}: {}", product.sku, err);
+                return Err(anyhow!("Inventory update failed: {}", err));
             }
 
+            // update price
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             let variant_url = format!("{}/variants/{}.json", self.base_url, variant_id);
             let price_body = json!({
@@ -227,7 +247,7 @@ pub async fn upsert_product(&mut self, product: &Product) -> Result<()> {
 
             let price_res = self.client.put(&variant_url).json(&price_body).send().await?;
             if price_res.status().is_success() {
-                info!("Successfully updated SKU: {} at Location: {}", product.sku, actual_loc_id);
+                info!("Successfully updated SKU: {} at Loc: {}", product.sku, actual_loc_id);
                 Ok(())
             } else {
                 error!("Price update failed for SKU {}: {}", product.sku, price_res.text().await?);
@@ -235,6 +255,8 @@ pub async fn upsert_product(&mut self, product: &Product) -> Result<()> {
             }
         }
         None => {
+            // No SKU found at all, safe to create
+            info!("SKU {} not found. Creating new product.", product.sku);
             self.create_product(product).await
         }
     }
