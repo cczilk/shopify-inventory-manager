@@ -3,7 +3,7 @@ mod services;
 
 use anyhow::Result;
 use clokwerk::{AsyncScheduler, TimeUnits, Job}; 
-use std::io::Write; // Required for .flush()
+use std::io::Write; 
 use services::{
     csv_service::CsvService, 
     shopify_service::ShopifyService, 
@@ -18,6 +18,8 @@ use std::path::PathBuf;
 use tracing::{info, error, debug};
 use notify::{Watcher, PollWatcher, Config, RecursiveMode};
 use chrono::{Local, Timelike, Duration as ChronoDuration};
+use std::panic;
+use std::fs::OpenOptions;
 
 enum ShopifyClient {
     Real(ShopifyService),
@@ -65,7 +67,21 @@ impl Clone for ShopifyClient {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    
+    panic::set_hook(Box::new(|info| {
+        let location = info.location().map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_else(|| "unknown".to_string());
+        let msg = match info.payload().downcast_ref::<&str>() {
+            Some(s) => *s,
+            None => match info.payload().downcast_ref::<String>() {
+                Some(s) => &s[..],
+                None => "No message provided",
+            },
+        };
+        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("crash_log.txt") {
+            let _ = writeln!(file, "[{}] PANIC at {}: {}", Local::now(), location, msg);
+        }
+        error!("CRITICAL PANIC at {}: {}", location, msg);
+    }));
+
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
             let env_path = exe_dir.join(".env");
@@ -73,10 +89,9 @@ async fn main() -> Result<()> {
         }
     }
     dotenv::dotenv().ok();
-    
     tracing_subscriber::fmt::init();
-    
-    // --- CRITICAL DEBUG CHECK ---
+
+    // --- DEBUG CHECK ---
     let check_hour = env::var("SYNC_HOUR").unwrap_or_else(|_| "NOT_SET".to_string());
     let check_user = env::var("SMTP_USER").unwrap_or_else(|_| "NOT_SET".to_string());
     info!("Starting Shopify Inventory Manager");
@@ -96,28 +111,39 @@ async fn main() -> Result<()> {
     };
 
     let email_service = EmailService::new();
-
     let mut scheduler = AsyncScheduler::new();
     let shopify_for_sched = shopify.clone();
     let email_for_sched = email_service.clone();
 
+    // march 8 , wrap token refresh in a 5 min timeout so wont ever hang the scheduler
     scheduler.every(1.day()).at("03:00").run(move || {
         let mut shop = shopify_for_sched.clone();
         let mail = email_for_sched.clone();
         async move {
-            match shop.refresh_token().await {
-                Ok(_) => info!("Background Task: Daily token refresh complete."),
-                Err(e) => {
+            match tokio::time::timeout(Duration::from_secs(300), shop.refresh_token()).await {
+                Ok(Ok(_)) => info!("Background Task: Daily token refresh complete."),
+                Ok(Err(e)) => {
                     error!("Token refresh FAILED: {}", e);
                     mail.send_error_alert(&format!("System failed to refresh Shopify Token: {}", e));
+                }
+                Err(_) => {
+                    error!("Token refresh TIMED OUT after 5 minutes");
+                    mail.send_error_alert(
+                        "Daily token refresh timed out — Shopify API may be unreachable. Manual refresh may be needed."
+                    );
                 }
             }
         }
     });
 
+    // march 8 - wrap run_pending in a timeout so a hung scheduled task cant freeze the entire
+    // scheduler loop forever
     tokio::spawn(async move {
         loop {
-            scheduler.run_pending().await;
+            let _ = tokio::time::timeout(
+                Duration::from_secs(600),
+                scheduler.run_pending()
+            ).await;
             tokio::time::sleep(Duration::from_secs(60)).await;
         }
     });
@@ -147,7 +173,7 @@ async fn main() -> Result<()> {
             info!("Current local time: {}", now.format("%H:%M:%S"));
             info!("Next sync scheduled for: {}", next_run.format("%Y-%m-%d %H:%M:%S"));
             info!("Sleeping for {} minutes...", wait_duration.num_minutes());
-            
+
             // Sleep until target reached
             while Local::now() < next_run {
                 tokio::time::sleep(Duration::from_secs(30)).await;
@@ -222,7 +248,6 @@ async fn main() -> Result<()> {
                         continue;
                     }
 
-                    
                     let target_path = if FileWatcher::is_excel_file(&path) {
                         let out = path.with_extension("csv");
                         let converter = ExcelConverter::new();
