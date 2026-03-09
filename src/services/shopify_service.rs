@@ -6,7 +6,7 @@ use std::env;
 use std::fs;
 use std::io::Write;
 use std::time::Duration;
-use tracing::{info, error};
+use tracing::{info, error, warn};
 
 #[derive(Clone)]
 pub struct ShopifyService {
@@ -22,6 +22,11 @@ fn normalize_sku_for_comparison(sku: &str) -> String {
         .to_uppercase()
 }
 
+// check if response body has shopify rate limit msg
+fn is_rate_limited(body: &str) -> bool {
+    body.contains("Exceeded 2 calls per second")
+}
+
 impl ShopifyService {
     pub fn new(store_url: String, access_token: String) -> Self {
         let mut headers = header::HeaderMap::new();
@@ -34,8 +39,6 @@ impl ShopifyService {
             header::HeaderValue::from_static("application/json"),
         );
 
-        // march 8 fix Added per-request and connection timeouts so any hanging API call
-        // is automatically killed after 30 seconds instead of freezing forever.
         let client = Client::builder()
             .default_headers(headers)
             .timeout(Duration::from_secs(30))
@@ -180,9 +183,10 @@ impl ShopifyService {
         Ok(None)
     }
 
-    // option1
+    // Option 1 — updates existing products only, skips SKUs not found in Shopify.
+    // march 8 Tracking PUT removed . Saves 1api call but assumes tracking is already on
     pub async fn update_existing_product(&mut self, product: &Product) -> Result<()> {
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(Duration::from_millis(2500)).await;
 
         let existing = match self.find_variant_by_sku(&product.sku).await {
             Ok(v) => v,
@@ -195,17 +199,10 @@ impl ShopifyService {
 
         match existing {
             Some(variant) => {
-                // SKU exists then update inventory and price
                 let variant_id = variant["id"].as_i64().unwrap();
                 let inv_item_id = variant["inventory_item_id"].as_i64().unwrap();
 
-                // force tracking on
-                let item_url = format!("{}/inventory_items/{}.json", self.base_url, inv_item_id);
-                let item_body = json!({ "inventory_item": { "id": inv_item_id, "tracked": true } });
-                let _ = self.client.put(&item_url).json(&item_body).send().await?;
-                tokio::time::sleep(Duration::from_millis(500)).await;
-
-                // dynamic location lookup
+                // Dynamic location lookup
                 let levels_url = format!("{}/inventory_levels.json?inventory_item_ids={}", self.base_url, inv_item_id);
                 let levels_res = self.client.get(&levels_url).send().await?;
                 let levels_data: serde_json::Value = levels_res.json().await?;
@@ -228,7 +225,7 @@ impl ShopifyService {
                     tokio::time::sleep(Duration::from_millis(500)).await;
                 }
 
-                // inv update
+                // update inventory, check body for rate limit and retry if hit
                 let inventory_url = format!("{}/inventory_levels/set.json", self.base_url);
                 let inventory_body = json!({
                     "location_id": actual_loc_id,
@@ -237,14 +234,23 @@ impl ShopifyService {
                     "disconnect_if_necessary": true
                 });
 
-                let inv_res = self.client.post(&inventory_url).json(&inventory_body).send().await?;
-                if !inv_res.status().is_success() {
-                    let err = inv_res.text().await?;
+                let inv_text = self.client.post(&inventory_url).json(&inventory_body).send().await?.text().await?;
+                let inv_text = if is_rate_limited(&inv_text) {
+                    warn!("Rate limited on inventory set for SKU {}, retrying after 4s...", product.sku);
+                    tokio::time::sleep(Duration::from_secs(4)).await;
+                    self.client.post(&inventory_url).json(&inventory_body).send().await?.text().await?
+                } else {
+                    inv_text
+                };
+
+                let inv_data: serde_json::Value = serde_json::from_str(&inv_text)?;
+                if inv_data.get("errors").is_some() {
+                    let err = inv_data["errors"].to_string();
                     error!("Inventory update failed for SKU {}: {}", product.sku, err);
                     return Err(anyhow!("Inventory update failed: {}", err));
                 }
 
-                // price update
+                // update price
                 tokio::time::sleep(Duration::from_millis(500)).await;
                 let variant_url = format!("{}/variants/{}.json", self.base_url, variant_id);
                 let price_body = json!({
@@ -271,7 +277,9 @@ impl ShopifyService {
         }
     }
 
-    // option 2
+    // Option 2, creates new products or updates existing ones.
+    // march 8 restored to original working direct client calls with 500ms inter-call sleeps.
+    // Body-based rate limit retry added on inventory POST where failures were occurring.
     pub async fn upsert_product(&mut self, product: &Product) -> Result<()> {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -289,13 +297,13 @@ impl ShopifyService {
                 let variant_id = variant["id"].as_i64().unwrap();
                 let inv_item_id = variant["inventory_item_id"].as_i64().unwrap();
 
-                // force tracking on
+                // Force tracking on
                 let item_url = format!("{}/inventory_items/{}.json", self.base_url, inv_item_id);
                 let item_body = json!({ "inventory_item": { "id": inv_item_id, "tracked": true } });
                 let _ = self.client.put(&item_url).json(&item_body).send().await?;
                 tokio::time::sleep(Duration::from_millis(500)).await;
 
-                // dynamic location lookup
+                // Dynamic location lookup
                 let levels_url = format!("{}/inventory_levels.json?inventory_item_ids={}", self.base_url, inv_item_id);
                 let levels_res = self.client.get(&levels_url).send().await?;
                 let levels_data: serde_json::Value = levels_res.json().await?;
@@ -306,7 +314,7 @@ impl ShopifyService {
                     .and_then(|lvl| lvl["location_id"].as_i64())
                     .unwrap_or(0);
 
-                // connection check
+                // Check connection
                 if actual_loc_id == 0 {
                     actual_loc_id = env::var("SHOPIFY_LOCATION_ID").unwrap_or_default().parse().unwrap_or(0);
                     let connect_url = format!("{}/inventory_levels/connect.json", self.base_url);
@@ -318,7 +326,7 @@ impl ShopifyService {
                     tokio::time::sleep(Duration::from_millis(500)).await;
                 }
 
-                // update inv
+                // Update inventory — check body for rate limit and retry if hit
                 let inventory_url = format!("{}/inventory_levels/set.json", self.base_url);
                 let inventory_body = json!({
                     "location_id": actual_loc_id,
@@ -327,14 +335,23 @@ impl ShopifyService {
                     "disconnect_if_necessary": true
                 });
 
-                let inv_res = self.client.post(&inventory_url).json(&inventory_body).send().await?;
-                if !inv_res.status().is_success() {
-                    let err = inv_res.text().await?;
+                let inv_text = self.client.post(&inventory_url).json(&inventory_body).send().await?.text().await?;
+                let inv_text = if is_rate_limited(&inv_text) {
+                    warn!("Rate limited on inventory set for SKU {}, retrying after 4s...", product.sku);
+                    tokio::time::sleep(Duration::from_secs(4)).await;
+                    self.client.post(&inventory_url).json(&inventory_body).send().await?.text().await?
+                } else {
+                    inv_text
+                };
+
+                let inv_data: serde_json::Value = serde_json::from_str(&inv_text)?;
+                if inv_data.get("errors").is_some() {
+                    let err = inv_data["errors"].to_string();
                     error!("Inventory update failed for SKU {}: {}", product.sku, err);
                     return Err(anyhow!("Inventory update failed: {}", err));
                 }
 
-                // update price
+                // pdate price
                 tokio::time::sleep(Duration::from_millis(500)).await;
                 let variant_url = format!("{}/variants/{}.json", self.base_url, variant_id);
                 let price_body = json!({
