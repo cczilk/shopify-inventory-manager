@@ -418,4 +418,11 @@ impl ShopifyService {
             Err(anyhow!("Failed to create product: {}", response.text().await?))
         }
     }
+    pub fn http_client(&self) -> &reqwest::Client {
+    &self.client
+    }
+
+    pub fn api_base_url(&self) -> &str {
+        &self.base_url
+    }
 }

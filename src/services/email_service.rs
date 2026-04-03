@@ -30,21 +30,39 @@ impl EmailService {
         }
     }
 
+    fn is_office365(&self) -> bool {
+        let server = &self.mailer_config.0;
+        server.contains("office365.com") || server.contains("outlook.com") || server.contains("microsoft.com")
+    }
+
     fn get_transport(&self) -> SmtpTransport {
         let (server, user, pass, port) = &self.mailer_config;
         let creds = Credentials::new(user.clone(), pass.clone());
-
-        
-        
         let tls_params = TlsParameters::new(server.clone())
             .expect("Failed to create TLS parameters");
 
-        SmtpTransport::starttls_relay(server)
-            .expect("Failed to create SMTP transport")
-            .port(*port)
-            .credentials(creds)
-            .tls(Tls::Required(tls_params)) 
-            .build()
+        if self.is_office365() {
+            // Office 365 requires STARTTLS on port 587.
+            // We explicitly set the local hostname to avoid Microsoft rejecting
+            // the connection due to a missing or unresolvable EHLO hostname.
+            SmtpTransport::starttls_relay(server)
+                .expect("Failed to create Office 365 SMTP transport")
+                .port(*port)
+                .credentials(creds)
+                .tls(Tls::Required(tls_params))
+                .hello_name(lettre::transport::smtp::extension::ClientId::Domain(
+                    env::var("SMTP_EHLO_HOSTNAME")
+                        .unwrap_or_else(|_| "localhost".to_string())
+                ))
+                .build()
+        } else {
+            SmtpTransport::starttls_relay(server)
+                .expect("Failed to create SMTP transport")
+                .port(*port)
+                .credentials(creds)
+                .tls(Tls::Required(tls_params))
+                .build()
+        }
     }
 
     pub fn send_error_alert(&self, error_message: &str) {
@@ -78,12 +96,11 @@ impl EmailService {
 
         match email_res {
             Ok(email) => {
-                
                 match self.get_transport().send(&email) {
                     Ok(_) => info!("Email notification sent successfully to {}", self.admin_email),
                     Err(e) => error!("SMTP Relay failed: {:?}", e),
                 }
-            },
+            }
             Err(e) => error!("Failed to build email message: {}", e),
         }
     }

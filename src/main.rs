@@ -2,22 +2,24 @@ mod models;
 mod services;
 
 use anyhow::Result;
-use clokwerk::{AsyncScheduler, TimeUnits, Job}; 
-use std::io::Write; 
+use clokwerk::{AsyncScheduler, TimeUnits, Job};
+use std::io::Write;
 use services::{
-    csv_service::CsvService, 
-    shopify_service::ShopifyService, 
+    csv_service::CsvService,
+    shopify_service::ShopifyService,
     mock_shopify_service::MockShopifyService,
     file_watcher::FileWatcher,
     excel_converter::ExcelConverter,
-    email_service::EmailService, 
+    email_service::EmailService,
+    sku_api_fixer,
+    bulk_sync,
 };
 use std::env;
 use std::time::Duration;
 use std::path::PathBuf;
-use tracing::{info, error, debug};
+use tracing::{info, error};
 use notify::{Watcher, PollWatcher, Config, RecursiveMode};
-use chrono::{Local, Timelike, Duration as ChronoDuration};
+use chrono::{Local, Duration as ChronoDuration};
 use std::panic;
 use std::fs::OpenOptions;
 
@@ -29,14 +31,14 @@ enum ShopifyClient {
 impl ShopifyClient {
     async fn create_product(&mut self, product: &models::Product) -> Result<()> {
         match self {
-            ShopifyClient::Real(s) => s.upsert_product(product).await, 
+            ShopifyClient::Real(s) => s.upsert_product(product).await,
             ShopifyClient::Mock(s) => s.update_product_on_shopify(product).await,
         }
     }
 
     async fn update_inventory(&mut self, product: &models::Product) -> Result<()> {
         match self {
-            ShopifyClient::Real(s) => s.upsert_product(product).await, 
+            ShopifyClient::Real(s) => s.upsert_product(product).await,
             ShopifyClient::Mock(s) => s.update_product_on_shopify(product).await,
         }
     }
@@ -91,7 +93,6 @@ async fn main() -> Result<()> {
     dotenv::dotenv().ok();
     tracing_subscriber::fmt::init();
 
-    // --- DEBUG CHECK ---
     let check_hour = env::var("SYNC_HOUR").unwrap_or_else(|_| "NOT_SET".to_string());
     let check_user = env::var("SMTP_USER").unwrap_or_else(|_| "NOT_SET".to_string());
     info!("Starting Shopify Inventory Manager");
@@ -115,7 +116,6 @@ async fn main() -> Result<()> {
     let shopify_for_sched = shopify.clone();
     let email_for_sched = email_service.clone();
 
-    // march 8 , wrap token refresh in a 5 min timeout so wont ever hang the scheduler
     scheduler.every(1.day()).at("03:00").run(move || {
         let mut shop = shopify_for_sched.clone();
         let mail = email_for_sched.clone();
@@ -136,8 +136,6 @@ async fn main() -> Result<()> {
         }
     });
 
-    // march 8 - wrap run_pending in a timeout so a hung scheduled task cant freeze the entire
-    // scheduler loop forever
     tokio::spawn(async move {
         loop {
             let _ = tokio::time::timeout(
@@ -147,7 +145,7 @@ async fn main() -> Result<()> {
             tokio::time::sleep(Duration::from_secs(60)).await;
         }
     });
-    
+
     let csv_service = CsvService::new();
     let file_watcher = FileWatcher::new(&watch_folder);
 
@@ -174,7 +172,6 @@ async fn main() -> Result<()> {
             info!("Next sync scheduled for: {}", next_run.format("%Y-%m-%d %H:%M:%S"));
             info!("Sleeping for {} minutes...", wait_duration.num_minutes());
 
-            // Sleep until target reached
             while Local::now() < next_run {
                 tokio::time::sleep(Duration::from_secs(30)).await;
             }
@@ -207,14 +204,13 @@ async fn main() -> Result<()> {
             if total_synced > 0 || total_failed > 0 {
                 let subject = format!("Shopify Daily Sync Report - {}", Local::now().format("%Y-%m-%d"));
                 let final_body = format!(
-                    "Daily Inventory Summary\n------------------------\nTotal Items Updated: {}\nTotal Files Failed: {}\n\nDetails:\n{}", 
+                    "Daily Inventory Summary\n------------------------\nTotal Items Updated: {}\nTotal Files Failed: {}\n\nDetails:\n{}",
                     total_synced, total_failed, report_body
                 );
                 email_service.send_report(&subject, &final_body);
                 info!("Daily report email sent.");
             }
 
-            // Small sleep to move past the current minute
             tokio::time::sleep(Duration::from_secs(61)).await;
         }
     } else {
@@ -222,24 +218,26 @@ async fn main() -> Result<()> {
             println!("\nShopify Inventory Manager");
             println!("1. Update inventory (one-time CSV)");
             println!("2. Bulk add new products (CSV, XLS, or XLSX)");
-            println!("3. Start scheduled updates (Stay in menu)");
-            println!("4. Watch folder continuously (Full Automation)");
-            println!("5. Refresh API Token Manually");
-            println!("6. Check System Status");
-            println!("7. Exit");
+            println!("3. Watch folder continuously (Full Automation)");
+            println!("4. Refresh API Token Manually");
+            println!("5. Check System Status");
+            println!("6. Fix Mismatched SKUs via API");
+            println!("7. Bulk Sync - Update existing (fast, API-only)");
+            println!("8. Bulk Sync - Update existing + create new (fast, API-only)");
+            println!("9. Exit");
             print!("Select an option: ");
-            
+
             std::io::stdout().flush()?;
             let mut input = String::new();
             std::io::stdin().read_line(&mut input)?;
-            
+
             match input.trim() {
                 "1" => {
                     print!("Enter file path (CSV/XLSX): ");
                     std::io::stdout().flush()?;
                     let mut path_str = String::new();
                     std::io::stdin().read_line(&mut path_str)?;
-                    
+
                     let cleaned_path = path_str.trim().trim_matches('"');
                     let path = PathBuf::from(cleaned_path);
 
@@ -254,10 +252,7 @@ async fn main() -> Result<()> {
                         info!("Converting Excel to CSV for inventory update...");
                         match converter.convert_to_shopify_csv(path.to_str().unwrap(), out.to_str().unwrap()).await {
                             Ok(_) => out.to_string_lossy().to_string(),
-                            Err(e) => { 
-                                error!("Conversion failed: {}", e); 
-                                continue; 
-                            }
+                            Err(e) => { error!("Conversion failed: {}", e); continue; }
                         }
                     } else {
                         cleaned_path.to_string()
@@ -296,21 +291,85 @@ async fn main() -> Result<()> {
                         let _ = file_watcher.move_to_processed(&path).await;
                     }
                 }
-                "3" => println!("Running in background..."),
-                "4" => {
+                "3" => {
                     let _ = run_continuous_watch(csv_service.clone(), shopify.clone(), file_watcher.clone()).await;
                 }
-                "5" => {
+                "4" => {
                     let _ = shopify.refresh_token().await;
                     println!("Token refreshed.");
                 }
-                "6" => {
+                "5" => {
                     println!("\n--- SYSTEM STATUS ---");
                     println!("Store: {}", store_url);
                     println!("Email: {}", check_user);
                     println!("Sync:  {}:{}", check_hour, env::var("SYNC_MINUTE").unwrap_or_else(|_| "0".to_string()));
                 }
-                "7" => break,
+                "6" => {
+                    if let ShopifyClient::Real(ref svc) = shopify {
+                        print!("Enter PRICE FILE path (CSV/XLS/XLSX from Commander export): ");
+                        std::io::stdout().flush()?;
+                        let mut price_path = String::new();
+                        std::io::stdin().read_line(&mut price_path)?;
+
+                        if let Err(e) = sku_api_fixer::run_api_sku_fix(
+                            svc.http_client(),
+                            svc.api_base_url(),
+                            price_path.trim().trim_matches('"'),
+                        ).await {
+                            error!("API SKU fixer error: {}", e);
+                            println!("Error: {}", e);
+                        }
+                    } else {
+                        println!("This option requires real mode (MOCK_MODE=false).");
+                    }
+                }
+                "7" | "8" => {
+                    if let ShopifyClient::Real(ref svc) = shopify {
+                        print!("Enter file path (CSV/XLS/XLSX): ");
+                        std::io::stdout().flush()?;
+                        let mut path_str = String::new();
+                        std::io::stdin().read_line(&mut path_str)?;
+                        let raw_path = path_str.trim().trim_matches('"');
+                        let path = PathBuf::from(raw_path);
+
+                        let csv_path = if FileWatcher::is_excel_file(&path) {
+                            let out = path.with_extension("csv");
+                            let converter = ExcelConverter::new();
+                            match converter.convert_to_shopify_csv(path.to_str().unwrap(), out.to_str().unwrap()).await {
+                                Ok(_) => out.to_string_lossy().to_string(),
+                                Err(e) => { error!("Conversion failed: {}", e); continue; }
+                            }
+                        } else {
+                            raw_path.to_string()
+                        };
+
+                        let products = match csv_service.read_csv(&csv_path).await {
+                            Ok(p) => p,
+                            Err(e) => { error!("Failed to read file: {}", e); continue; }
+                        };
+
+                        let mode = if input.trim() == "8" { "upsert" } else { "update" };
+
+                        match bulk_sync::run_bulk_sync(
+                            svc.http_client(),
+                            svc.api_base_url(),
+                            &products,
+                            mode,
+                        ).await {
+                            Ok((updated, created, skipped)) => {
+                                let _ = file_watcher.move_to_processed(&path).await;
+                                println!("\nBulk sync complete — updated: {}, created: {}, skipped: {}", updated, created, skipped);
+                            }
+                            Err(e) => {
+                                error!("Bulk sync error: {}", e);
+                                println!("Error: {}", e);
+                            }
+                        }
+                    } else {
+                        println!("This option requires real mode (MOCK_MODE=false).");
+                    }
+                }
+                "9" => break,
                 _ => println!("Invalid selection."),
             }
         }
@@ -370,9 +429,9 @@ async fn run_continuous_watch(csv_service: CsvService, mut shopify: ShopifyClien
 async fn update_inventory_from_file(csv_service: &CsvService, shopify: &mut ShopifyClient, file_path: &str) -> Result<u32> {
     let products = csv_service.read_csv(file_path).await?;
     let mut count = 0;
-    for product in &products { 
-        if shopify.update_inventory(product).await.is_ok() { 
-            count += 1; 
+    for product in &products {
+        if shopify.update_inventory(product).await.is_ok() {
+            count += 1;
         }
     }
     Ok(count)
