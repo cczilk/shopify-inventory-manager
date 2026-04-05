@@ -2,6 +2,7 @@ use crate::models::Product;
 use anyhow::{anyhow, Result};
 use reqwest::Client;
 use serde_json::json;
+use std::io::Write;
 use std::collections::HashMap;
 use std::time::Duration;
 use tracing::{info, warn, error};
@@ -11,6 +12,8 @@ struct CachedVariant {
     variant_id: i64,
     inv_item_id: i64,
     location_id: i64,
+    current_price: f64,
+    current_qty: i32,
 }
 
 fn is_rate_limited(body: &str) -> bool {
@@ -38,6 +41,8 @@ async fn fetch_all_variants(client: &Client, base_url: &str) -> Result<HashMap<S
                         node {{
                             id
                             sku
+                            price
+                            inventoryQuantity
                             inventoryItem {{
                                 id
                                 inventoryLevels(first: 1) {{
@@ -63,9 +68,16 @@ async fn fetch_all_variants(client: &Client, base_url: &str) -> Result<HashMap<S
             return Err(anyhow!("GraphQL error: {}", errors[0]["message"].as_str().unwrap_or("unknown")));
         }
 
-        let edges = data["data"]["productVariants"]["edges"]
-            .as_array()
-            .ok_or_else(|| anyhow!("Unexpected GraphQL response on page {}", page))?;
+        let edges = match data["data"]["productVariants"]["edges"].as_array() {
+            Some(e) => e,
+            None => {
+                return Err(anyhow!(
+                    "Unexpected GraphQL response on page {}. Full response: {}",
+                    page,
+                    serde_json::to_string_pretty(&data).unwrap_or_else(|_| data.to_string())
+                ));
+            }
+        };
 
         for edge in edges {
             let node = &edge["node"];
@@ -87,19 +99,34 @@ async fn fetch_all_variants(client: &Client, base_url: &str) -> Result<HashMap<S
                 .and_then(|s| s.parse::<i64>().ok())
                 .unwrap_or(0);
 
-            map.insert(sku.to_uppercase(), CachedVariant { variant_id, inv_item_id, location_id });
+            let current_price = node["price"].as_str()
+                .and_then(|p| p.parse::<f64>().ok())
+                .unwrap_or(0.0);
+
+            let current_qty = node["inventoryQuantity"].as_i64().unwrap_or(0) as i32;
+
+            map.insert(sku.to_uppercase(), CachedVariant {
+                variant_id,
+                inv_item_id,
+                location_id,
+                current_price,
+                current_qty,
+            });
         }
+
+        print!("\r  Fetching variants… page {} ({} cached)", page, map.len());
+        std::io::stdout().flush().ok();
 
         let page_info = &data["data"]["productVariants"]["pageInfo"];
         if page_info["hasNextPage"].as_bool().unwrap_or(false) {
             cursor = page_info["endCursor"].as_str().map(String::from);
-            // respect the rate limit between pages
             tokio::time::sleep(Duration::from_millis(500)).await;
         } else {
             break;
         }
     }
 
+    println!();
     info!("Bulk fetch complete: {} variants across {} pages", map.len(), page);
     Ok(map)
 }
@@ -112,7 +139,6 @@ async fn update_variant(
 ) -> Result<()> {
     let mut loc_id = cached.location_id;
 
-    // If location_id wasnt in the GraphQL response, fall back to env var
     if loc_id == 0 {
         loc_id = std::env::var("SHOPIFY_LOCATION_ID")
             .unwrap_or_default()
@@ -152,7 +178,6 @@ async fn update_variant(
         return Err(anyhow!("Inventory update failed: {}", inv_data["errors"]));
     }
 
-    // Update price
     tokio::time::sleep(Duration::from_millis(500)).await;
     let variant_url = format!("{}/variants/{}.json", base_url, cached.variant_id);
     let price_body = json!({
@@ -165,7 +190,6 @@ async fn update_variant(
 
     let price_res = client.put(&variant_url).json(&price_body).send().await?;
     if price_res.status().is_success() {
-        info!("Updated SKU: {} qty={} price={}", product.sku, product.inventory_quantity, product.price);
         Ok(())
     } else {
         Err(anyhow!("Price update failed for {}: {}", product.sku, price_res.text().await?))
@@ -221,49 +245,116 @@ pub async fn run_bulk_sync(
     base_url: &str,
     products: &[Product],
     mode: &str,
-) -> Result<(u32, u32, u32)> {
+) -> Result<(u32, u32, u32, String)> {
     let upsert = mode == "upsert";
 
-    info!("Bulk sync starting: {} products from price file, mode={}", products.len(), mode);
+    info!("Bulk sync starting: {} products, mode={}", products.len(), mode);
     println!("  Fetching all Shopify variants (one-time pull)…");
 
     let shopify_map = fetch_all_variants(client, base_url).await?;
     println!("  {} variants cached from Shopify.", shopify_map.len());
-    println!("  Comparing and pushing changes…\n");
 
-    let mut updated = 0u32;
-    let mut created = 0u32;
-    let mut skipped = 0u32;
+    // ── Pre-scan: diff locally before touching the API ───────────────────────
+    struct PendingChange<'a> {
+        product: &'a Product,
+        cached: &'a CachedVariant,
+        change_desc: String,
+    }
+
+    let mut to_update: Vec<PendingChange> = Vec::new();
+    let mut to_create: Vec<&Product> = Vec::new();
+    let mut already_current = 0u32;
 
     for product in products {
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
         match shopify_map.get(&product.sku.to_uppercase()) {
             Some(cached) => {
-                match update_variant(client, base_url, product, cached).await {
-                    Ok(_) => updated += 1,
-                    Err(e) => {
-                        error!("Failed to update SKU {}: {}", product.sku, e);
-                        skipped += 1;
-                    }
+                let price_changed = (cached.current_price - product.price).abs() > 0.001;
+                let qty_changed = cached.current_qty != product.inventory_quantity;
+
+                if !price_changed && !qty_changed {
+                    already_current += 1;
+                    continue;
                 }
+
+                let mut parts = Vec::new();
+                if qty_changed {
+                    parts.push(format!("qty {} → {}", cached.current_qty, product.inventory_quantity));
+                }
+                if price_changed {
+                    parts.push(format!("price ${:.2} → ${:.2}", cached.current_price, product.price));
+                }
+
+                to_update.push(PendingChange {
+                    product,
+                    cached,
+                    change_desc: parts.join("  |  "),
+                });
             }
             None => {
                 if upsert {
-                    match create_product(client, base_url, product).await {
-                        Ok(_) => created += 1,
-                        Err(e) => {
-                            error!("Failed to create SKU {}: {}", product.sku, e);
-                            skipped += 1;
-                        }
-                    }
+                    to_create.push(product);
                 } else {
-                    info!("SKU {} not in Shopify, skipping (bulk update mode).", product.sku);
-                    skipped += 1;
+                    already_current += 1;
                 }
             }
         }
     }
 
-    Ok((updated, created, skipped))
+    println!(
+        "\n  Pre-scan complete — {} to update, {} to create, {} already current.",
+        to_update.len(), to_create.len(), already_current
+    );
+
+    if to_update.is_empty() && to_create.is_empty() {
+        println!("  ✔  Everything is already up to date.");
+        return Ok((0, 0, already_current, "Everything already up to date.".to_string()));
+    }
+
+    println!("  Pushing changes…\n");
+
+    let mut updated = 0u32;
+    let mut created = 0u32;
+    let mut failed = 0u32;
+    let mut report_lines: Vec<String> = Vec::new();
+
+    for change in &to_update {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        match update_variant(client, base_url, change.product, change.cached).await {
+            Ok(_) => {
+                println!("  ✔  {} — {}", change.product.sku, change.change_desc);
+                report_lines.push(format!("  {} — {}", change.product.sku, change.change_desc));
+                updated += 1;
+            }
+            Err(e) => {
+                error!("Failed to update SKU {}: {}", change.product.sku, e);
+                println!("  ✗  {} — error: {}", change.product.sku, e);
+                report_lines.push(format!("  {} — FAILED: {}", change.product.sku, e));
+                failed += 1;
+            }
+        }
+    }
+
+    for product in &to_create {
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        match create_product(client, base_url, product).await {
+            Ok(_) => {
+                println!("  +  {} — created (price ${:.2}, qty {})", product.sku, product.price, product.inventory_quantity);
+                report_lines.push(format!("  {} — CREATED (price ${:.2}, qty {})", product.sku, product.price, product.inventory_quantity));
+                created += 1;
+            }
+            Err(e) => {
+                error!("Failed to create SKU {}: {}", product.sku, e);
+                report_lines.push(format!("  {} — CREATE FAILED: {}", product.sku, e));
+                failed += 1;
+            }
+        }
+    }
+
+    let report = format!(
+        "Bulk Sync Report\n         ================\n         Updated : {}\n         Created : {}\n         Skipped : {} (no change)\n         Failed  : {}\n         \n         Changes:\n         {}",
+        updated, created, already_current, failed,
+        report_lines.join("\n")
+    );
+
+    Ok((updated, created, already_current, report))
 }

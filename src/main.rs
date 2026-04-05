@@ -356,9 +356,14 @@ async fn main() -> Result<()> {
                             &products,
                             mode,
                         ).await {
-                            Ok((updated, created, skipped)) => {
+                            Ok((updated, created, skipped, report)) => {
                                 let _ = file_watcher.move_to_processed(&path).await;
                                 println!("\nBulk sync complete — updated: {}, created: {}, skipped: {}", updated, created, skipped);
+                                if updated > 0 || created > 0 {
+                                    let subject = format!("Shopify Bulk Sync Report - {}", chrono::Local::now().format("%Y-%m-%d %H:%M"));
+                                    email_service.send_report(&subject, &report);
+                                    info!("Bulk sync report emailed.");
+                                }
                             }
                             Err(e) => {
                                 error!("Bulk sync error: {}", e);

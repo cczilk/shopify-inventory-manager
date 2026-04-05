@@ -43,8 +43,6 @@ impl EmailService {
 
         if self.is_office365() {
             // Office 365 requires STARTTLS on port 587.
-            // We explicitly set the local hostname to avoid Microsoft rejecting
-            // the connection due to a missing or unresolvable EHLO hostname.
             SmtpTransport::starttls_relay(server)
                 .expect("Failed to create Office 365 SMTP transport")
                 .port(*port)
