@@ -14,6 +14,7 @@ struct CachedVariant {
     location_id: i64,
     current_price: f64,
     current_qty: i32,
+    tracked: bool,
 }
 
 fn is_rate_limited(body: &str) -> bool {
@@ -45,6 +46,7 @@ async fn fetch_all_variants(client: &Client, base_url: &str) -> Result<HashMap<S
                             inventoryQuantity
                             inventoryItem {{
                                 id
+                                tracked 
                                 inventoryLevels(first: 1) {{
                                     edges {{
                                         node {{
@@ -105,12 +107,15 @@ async fn fetch_all_variants(client: &Client, base_url: &str) -> Result<HashMap<S
 
             let current_qty = node["inventoryQuantity"].as_i64().unwrap_or(0) as i32;
 
+            let tracked = node["inventoryItem"]["tracked"].as_bool().unwrap_or(false);
+
             map.insert(sku.to_uppercase(), CachedVariant {
                 variant_id,
                 inv_item_id,
                 location_id,
                 current_price,
                 current_qty,
+                tracked,
             });
         }
 
@@ -137,6 +142,19 @@ async fn update_variant(
     product: &Product,
     cached: &CachedVariant,
 ) -> Result<()> {
+
+    if !cached.tracked {
+        let item_url = format!("{}/inventory_items/{}.json", base_url, cached.inv_item_id);
+        let track_body = json!({
+            "inventory_item": {
+                "id": cached.inv_item_id,
+                "tracked": true
+            }
+        });
+        let _ = client.put(&item_url).json(&track_body).send().await?;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
     let mut loc_id = cached.location_id;
 
     if loc_id == 0 {
