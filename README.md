@@ -4,7 +4,7 @@
 tool that automates inventory syncing from Commander exports to Shopify. CSV or XLSX file is dropped into the watch folder and it handles the rest,
 updating prices, quantities, and creating new products as drafts for review. Includes a daily scheduler, email reports, and a mock mode for safe testing.
 Features
-
+```text
 Auto-syncs inventory from Commander CSV/XLSX exports
 New products enter Shopify as drafts — publish when ready
 Daily scheduled sync with email summary reports
