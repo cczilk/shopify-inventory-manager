@@ -209,6 +209,16 @@ async fn main() -> Result<()> {
                 );
                 email_service.send_report(&subject, &final_body);
                 info!("Daily report email sent.");
+
+                // Save report locally
+                let report_dir = std::path::Path::new("data/reports");
+                let _ = std::fs::create_dir_all(report_dir);
+                let filename = format!("data/reports/daily_{}.txt", Local::now().format("%Y%m%d_%H%M%S"));
+                if let Err(e) = std::fs::write(&filename, &final_body) {
+                    error!("Failed to save daily report to {}: {}", filename, e);
+                } else {
+                    info!("Daily report saved to {}", filename);
+                }
             }
 
             tokio::time::sleep(Duration::from_secs(61)).await;

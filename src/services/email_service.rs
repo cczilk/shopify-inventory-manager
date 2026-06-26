@@ -1,4 +1,4 @@
-use lettre::transport::smtp::authentication::Credentials;
+use lettre::transport::smtp::authentication::{Credentials, Mechanism};
 use lettre::transport::smtp::client::{Tls, TlsParameters};
 use lettre::{Message, SmtpTransport, Transport};
 use std::env;
@@ -42,11 +42,12 @@ impl EmailService {
             .expect("Failed to create TLS parameters");
 
         if self.is_office365() {
-            // Office 365 requires STARTTLS on port 587.
+            // APRIL 5th, Office 365 only accepts LOGIN or PLAIN auth mechanisms.
             SmtpTransport::starttls_relay(server)
                 .expect("Failed to create Office 365 SMTP transport")
                 .port(*port)
                 .credentials(creds)
+                .authentication(vec![Mechanism::Login, Mechanism::Plain])
                 .tls(Tls::Required(tls_params))
                 .hello_name(lettre::transport::smtp::extension::ClientId::Domain(
                     env::var("SMTP_EHLO_HOSTNAME")

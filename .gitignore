@@ -8,3 +8,4 @@ data/incoming/*.xls
 data/incoming/*.xlsx
 data/processed/*
 target/
+incoming/

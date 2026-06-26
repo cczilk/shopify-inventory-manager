@@ -391,6 +391,7 @@ impl ShopifyService {
                 "vendor": product.oem,
                 "body_html": product.description,
                 "handle": product.handle,
+                "status": "draft",   // new products enter as drafts; publish manually in Shopify admin
                 "variants": [{
                     "sku": product.sku,
                     "price": product.price.to_string(),

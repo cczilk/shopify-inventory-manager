@@ -223,6 +223,7 @@ async fn create_product(client: &Client, base_url: &str, product: &Product) -> R
             "vendor": product.oem,
             "body_html": product.description,
             "handle": product.handle,
+            "status": "draft",   // new products enter as drafts; publish manually in Shopify admin
             "variants": [{
                 "sku": product.sku,
                 "price": product.price.to_string(),
@@ -333,20 +334,36 @@ pub async fn run_bulk_sync(
     let mut updated = 0u32;
     let mut created = 0u32;
     let mut failed = 0u32;
-    let mut report_lines: Vec<String> = Vec::new();
+    let mut qty_change_lines: Vec<String> = Vec::new();
+    let mut price_change_lines: Vec<String> = Vec::new();
+    let mut new_item_lines: Vec<String> = Vec::new();
+    let mut failed_lines: Vec<String> = Vec::new();
 
     for change in &to_update {
         tokio::time::sleep(Duration::from_millis(500)).await;
         match update_variant(client, base_url, change.product, change.cached).await {
             Ok(_) => {
                 println!("  ✔  {} — {}", change.product.sku, change.change_desc);
-                report_lines.push(format!("  {} — {}", change.product.sku, change.change_desc));
+                let cached = change.cached;
+                let product = change.product;
+                if cached.current_qty != product.inventory_quantity {
+                    qty_change_lines.push(format!(
+                        "    {:<20}  qty {} → {}",
+                        product.sku, cached.current_qty, product.inventory_quantity
+                    ));
+                }
+                if (cached.current_price - product.price).abs() > 0.001 {
+                    price_change_lines.push(format!(
+                        "    {:<20}  ${:.2} → ${:.2}",
+                        product.sku, cached.current_price, product.price
+                    ));
+                }
                 updated += 1;
             }
             Err(e) => {
                 error!("Failed to update SKU {}: {}", change.product.sku, e);
                 println!("  ✗  {} — error: {}", change.product.sku, e);
-                report_lines.push(format!("  {} — FAILED: {}", change.product.sku, e));
+                failed_lines.push(format!("    {} — {}", change.product.sku, e));
                 failed += 1;
             }
         }
@@ -356,23 +373,73 @@ pub async fn run_bulk_sync(
         tokio::time::sleep(Duration::from_millis(600)).await;
         match create_product(client, base_url, product).await {
             Ok(_) => {
-                println!("  +  {} — created (price ${:.2}, qty {})", product.sku, product.price, product.inventory_quantity);
-                report_lines.push(format!("  {} — CREATED (price ${:.2}, qty {})", product.sku, product.price, product.inventory_quantity));
+                println!("  +  {} — created as DRAFT (price ${:.2}, qty {})", product.sku, product.price, product.inventory_quantity);
+                new_item_lines.push(format!(
+                    "    {:<20}  price ${:.2}  qty {}  [DRAFT — review before publishing]",
+                    product.sku, product.price, product.inventory_quantity
+                ));
                 created += 1;
             }
             Err(e) => {
                 error!("Failed to create SKU {}: {}", product.sku, e);
-                report_lines.push(format!("  {} — CREATE FAILED: {}", product.sku, e));
+                failed_lines.push(format!("    {} — CREATE FAILED: {}", product.sku, e));
                 failed += 1;
             }
         }
     }
 
-    let report = format!(
-        "Bulk Sync Report\n         ================\n         Updated : {}\n         Created : {}\n         Skipped : {} (no change)\n         Failed  : {}\n         \n         Changes:\n         {}",
-        updated, created, already_current, failed,
-        report_lines.join("\n")
+    let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M");
+
+    let mut report = format!(
+        "Shopify Bulk Sync Report — {}\n{}\n\n",
+        timestamp,
+        "=".repeat(55)
     );
+    report.push_str(&format!(
+        "  Updated : {}\n  Created : {} (as drafts)\n  Skipped : {} (no change)\n  Failed  : {}\n\n",
+        updated, created, already_current, failed
+    ));
+
+    if !new_item_lines.is_empty() {
+        report.push_str(&format!("NEW ITEMS ({}) — entered as drafts, action required:\n", new_item_lines.len()));
+        report.push_str(&new_item_lines.join("\n"));
+        report.push_str("\n\n");
+    }
+
+    if !qty_change_lines.is_empty() {
+        report.push_str(&format!("QUANTITY CHANGES ({}):\n", qty_change_lines.len()));
+        report.push_str(&qty_change_lines.join("\n"));
+        report.push_str("\n\n");
+    }
+
+    if !price_change_lines.is_empty() {
+        report.push_str(&format!("PRICE CHANGES ({}):\n", price_change_lines.len()));
+        report.push_str(&price_change_lines.join("\n"));
+        report.push_str("\n\n");
+    }
+
+    if !failed_lines.is_empty() {
+        report.push_str(&format!("FAILURES ({}):\n", failed_lines.len()));
+        report.push_str(&failed_lines.join("\n"));
+        report.push_str("\n");
+    }
+
+    // Save report to disk
+    if updated > 0 || created > 0 || failed > 0 {
+        let report_dir = std::path::Path::new("data/reports");
+        if let Err(e) = std::fs::create_dir_all(report_dir) {
+            warn!("Could not create reports directory: {}", e);
+        } else {
+            let filename = format!(
+                "data/reports/sync_{}.txt",
+                chrono::Local::now().format("%Y%m%d_%H%M%S")
+            );
+            match std::fs::write(&filename, &report) {
+                Ok(_) => info!("Sync report saved to {}", filename),
+                Err(e) => warn!("Failed to save report to {}: {}", filename, e),
+            }
+        }
+    }
 
     Ok((updated, created, already_current, report))
 }
