@@ -223,7 +223,7 @@ async fn create_product(client: &Client, base_url: &str, product: &Product) -> R
             "vendor": product.oem,
             "body_html": product.description,
             "handle": product.handle,
-            "status": "draft",   // new products enter as drafts; publish manually in Shopify admin
+            "status": "draft",
             "variants": [{
                 "sku": product.sku,
                 "price": product.price.to_string(),
@@ -334,36 +334,58 @@ pub async fn run_bulk_sync(
     let mut updated = 0u32;
     let mut created = 0u32;
     let mut failed = 0u32;
-    let mut qty_change_lines: Vec<String> = Vec::new();
-    let mut price_change_lines: Vec<String> = Vec::new();
+
+    // One row per SKU: SKU | PRICE change | QTY change
+    struct ChangeRow {
+        sku: String,
+        price_col: String,
+        qty_col: String,
+        failed: bool,
+        error: String,
+    }
+    let mut change_rows: Vec<ChangeRow> = Vec::new();
     let mut new_item_lines: Vec<String> = Vec::new();
     let mut failed_lines: Vec<String> = Vec::new();
 
     for change in &to_update {
         tokio::time::sleep(Duration::from_millis(500)).await;
-        match update_variant(client, base_url, change.product, change.cached).await {
+        let cached = change.cached;
+        let product = change.product;
+
+        let price_col = if (cached.current_price - product.price).abs() > 0.001 {
+            format!("${:.2} -> ${:.2}", cached.current_price, product.price)
+        } else {
+            "no change".to_string()
+        };
+        let qty_col = if cached.current_qty != product.inventory_quantity {
+            format!("{} -> {}", cached.current_qty, product.inventory_quantity)
+        } else {
+            "no change".to_string()
+        };
+
+        match update_variant(client, base_url, product, cached).await {
             Ok(_) => {
-                println!("  ✔  {} — {}", change.product.sku, change.change_desc);
-                let cached = change.cached;
-                let product = change.product;
-                if cached.current_qty != product.inventory_quantity {
-                    qty_change_lines.push(format!(
-                        "    {:<20}  qty {} → {}",
-                        product.sku, cached.current_qty, product.inventory_quantity
-                    ));
-                }
-                if (cached.current_price - product.price).abs() > 0.001 {
-                    price_change_lines.push(format!(
-                        "    {:<20}  ${:.2} → ${:.2}",
-                        product.sku, cached.current_price, product.price
-                    ));
-                }
+                println!("  OK  {} -- {}", product.sku, change.change_desc);
+                change_rows.push(ChangeRow {
+                    sku: product.sku.clone(),
+                    price_col,
+                    qty_col,
+                    failed: false,
+                    error: String::new(),
+                });
                 updated += 1;
             }
             Err(e) => {
-                error!("Failed to update SKU {}: {}", change.product.sku, e);
-                println!("  ✗  {} — error: {}", change.product.sku, e);
-                failed_lines.push(format!("    {} — {}", change.product.sku, e));
+                error!("Failed to update SKU {}: {}", product.sku, e);
+                println!("  XX  {} -- error: {}", product.sku, e);
+                change_rows.push(ChangeRow {
+                    sku: product.sku.clone(),
+                    price_col,
+                    qty_col,
+                    failed: true,
+                    error: e.to_string(),
+                });
+                failed_lines.push(format!("    {} -- {}", product.sku, e));
                 failed += 1;
             }
         }
@@ -373,70 +395,120 @@ pub async fn run_bulk_sync(
         tokio::time::sleep(Duration::from_millis(600)).await;
         match create_product(client, base_url, product).await {
             Ok(_) => {
-                println!("  +  {} — created as DRAFT (price ${:.2}, qty {})", product.sku, product.price, product.inventory_quantity);
+                println!("  +  {} -- created as DRAFT (price ${:.2}, qty {})", product.sku, product.price, product.inventory_quantity);
                 new_item_lines.push(format!(
-                    "    {:<20}  price ${:.2}  qty {}  [DRAFT — review before publishing]",
+                    "    {:<22}  ${:.2}  qty {}  [DRAFT -- review before publishing]",
                     product.sku, product.price, product.inventory_quantity
                 ));
                 created += 1;
             }
             Err(e) => {
                 error!("Failed to create SKU {}: {}", product.sku, e);
-                failed_lines.push(format!("    {} — CREATE FAILED: {}", product.sku, e));
+                failed_lines.push(format!("    {} -- CREATE FAILED: {}", product.sku, e));
                 failed += 1;
             }
         }
     }
 
     let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M");
-
     let mut report = format!(
-        "Shopify Bulk Sync Report — {}\n{}\n\n",
-        timestamp,
-        "=".repeat(55)
+        "Shopify Bulk Sync Report -- {}\n{}\n\n",
+        timestamp, "=".repeat(65)
     );
     report.push_str(&format!(
         "  Updated : {}\n  Created : {} (as drafts)\n  Skipped : {} (no change)\n  Failed  : {}\n\n",
         updated, created, already_current, failed
     ));
 
+    if !change_rows.is_empty() {
+        let success_count = change_rows.iter().filter(|r| !r.failed).count();
+        report.push_str(&format!("CHANGES ({}):\n", success_count));
+        report.push_str(&format!(
+            "    {:<22}  {:<24}  {}\n",
+            "SKU", "PRICE", "QTY"
+        ));
+        report.push_str(&format!("    {}\n", "-".repeat(65)));
+        for row in &change_rows {
+            if !row.failed {
+                report.push_str(&format!(
+                    "    {:<22}  {:<24}  {}\n",
+                    row.sku, row.price_col, row.qty_col
+                ));
+            }
+        }
+        report.push('\n');
+    }
+
     if !new_item_lines.is_empty() {
-        report.push_str(&format!("NEW ITEMS ({}) — entered as drafts, action required:\n", new_item_lines.len()));
+        report.push_str(&format!("NEW ITEMS ({}) -- entered as drafts, action required:\n", new_item_lines.len()));
         report.push_str(&new_item_lines.join("\n"));
-        report.push_str("\n\n");
-    }
-
-    if !qty_change_lines.is_empty() {
-        report.push_str(&format!("QUANTITY CHANGES ({}):\n", qty_change_lines.len()));
-        report.push_str(&qty_change_lines.join("\n"));
-        report.push_str("\n\n");
-    }
-
-    if !price_change_lines.is_empty() {
-        report.push_str(&format!("PRICE CHANGES ({}):\n", price_change_lines.len()));
-        report.push_str(&price_change_lines.join("\n"));
         report.push_str("\n\n");
     }
 
     if !failed_lines.is_empty() {
         report.push_str(&format!("FAILURES ({}):\n", failed_lines.len()));
         report.push_str(&failed_lines.join("\n"));
-        report.push_str("\n");
+        report.push('\n');
     }
 
-    // Save report to disk
+    // Save report as CSV to disk
     if updated > 0 || created > 0 || failed > 0 {
         let report_dir = std::path::Path::new("data/reports");
         if let Err(e) = std::fs::create_dir_all(report_dir) {
             warn!("Could not create reports directory: {}", e);
         } else {
             let filename = format!(
-                "data/reports/sync_{}.txt",
+                "data/reports/sync_{}.csv",
                 chrono::Local::now().format("%Y%m%d_%H%M%S")
             );
-            match std::fs::write(&filename, &report) {
-                Ok(_) => info!("Sync report saved to {}", filename),
-                Err(e) => warn!("Failed to save report to {}: {}", filename, e),
+            match csv::Writer::from_path(&filename) {
+                Ok(mut wtr) => {
+                    let ts = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
+                    wtr.write_record(&["Shopify Bulk Sync Report", &ts, "", ""]).ok();
+                    wtr.write_record(&["", "", "", ""]).ok();
+                    wtr.write_record(&["Updated", &updated.to_string(), "", ""]).ok();
+                    wtr.write_record(&["Created (as drafts)", &created.to_string(), "", ""]).ok();
+                    wtr.write_record(&["Skipped (no change)", &already_current.to_string(), "", ""]).ok();
+                    wtr.write_record(&["Failed", &failed.to_string(), "", ""]).ok();
+                    wtr.write_record(&["", "", "", ""]).ok();
+
+                    if !change_rows.is_empty() {
+                        wtr.write_record(&["SKU", "PRICE", "QTY", "STATUS"]).ok();
+                        for row in &change_rows {
+                            let status = if row.failed {
+                                format!("FAILED: {}", row.error)
+                            } else {
+                                "Updated".to_string()
+                            };
+                            wtr.write_record(&[&row.sku, &row.price_col, &row.qty_col, &status]).ok();
+                        }
+                        wtr.write_record(&["", "", "", ""]).ok();
+                    }
+
+                    if !to_create.is_empty() {
+                        wtr.write_record(&["NEW ITEMS", "PRICE", "QTY", "STATUS"]).ok();
+                        for product in &to_create {
+                            wtr.write_record(&[
+                                &product.sku,
+                                &format!("${:.2}", product.price),
+                                &product.inventory_quantity.to_string(),
+                                "DRAFT - review before publishing",
+                            ]).ok();
+                        }
+                        wtr.write_record(&["", "", "", ""]).ok();
+                    }
+
+                    if change_rows.iter().any(|r| r.failed) {
+                        wtr.write_record(&["FAILURES", "PRICE", "QTY", "ERROR"]).ok();
+                        for row in change_rows.iter().filter(|r| r.failed) {
+                            wtr.write_record(&[&row.sku, &row.price_col, &row.qty_col, &row.error]).ok();
+                        }
+                    }
+
+                    wtr.flush().ok();
+                    info!("Sync report saved to {}", filename);
+                }
+                Err(e) => warn!("Failed to save CSV report to {}: {}", filename, e),
             }
         }
     }
