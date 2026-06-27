@@ -35,8 +35,8 @@ impl EmailService {
         server.contains("office365.com") || server.contains("outlook.com") || server.contains("microsoft.com")
     }
 
-    // SMTP_IP_RELAY=true, then unauthenticated relay, server whitelists by IP
-    // SMTP_IP_RELAY_TLS=true, then same but server requires STARTTLS (still no credentials)
+    // SMTP_IP_RELAY=true       — unauthenticated relay, server whitelists by IP
+    // SMTP_IP_RELAY_TLS=true   — same but server requires STARTTLS (still no credentials)
     fn ip_relay_mode(&self) -> Option<bool> {
         if env::var("SMTP_IP_RELAY").unwrap_or_default().trim().to_lowercase() == "true" {
             let wants_tls = env::var("SMTP_IP_RELAY_TLS")
@@ -52,16 +52,16 @@ impl EmailService {
 
         if let Some(use_tls) = self.ip_relay_mode() {
             if use_tls {
-                // Relay needs STARTTLS but no auth the builder_dangerous avoids auth negotiation entirely
+                // Relay needs STARTTLS but no auth — builder_dangerous avoids auth negotiation entirely
                 info!("Email: IP relay with STARTTLS (no auth) via {}:{}", server, port);
                 let tls_params = TlsParameters::new(server.clone())
                     .expect("Failed to create TLS parameters");
                 return SmtpTransport::builder_dangerous(server)
                     .port(*port)
-                    .tls(Tls::Required(tls_params))
+                    .tls(Tls::Opportunistic(tls_params))
                     .build();
             } else {
-                // full open relay, plain SMTP, no TLS, no auth
+                // Fully open relay, plain SMTP, no TLS, no auth
                 info!("Email: IP relay plain SMTP (no auth, no TLS) via {}:{}", server, port);
                 return SmtpTransport::builder_dangerous(server)
                     .port(*port)
